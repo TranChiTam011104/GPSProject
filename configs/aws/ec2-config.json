@@ -1,0 +1,30 @@
+# AWS EC2 Configuration
+
+Instance:
+  Type: t2.micro
+  AMI: ami-0c7217cdde317cfec  # Ubuntu 22.04
+  Region: us-east-1
+  
+SecurityGroup:
+  Name: gps-inference-sg
+  InboundRules:
+    - Type: SSH, Port: 22, Source: 0.0.0.0/0
+    - Type: HTTP, Port: 80, Source: 0.0.0.0/0
+    - Type: HTTPS, Port: 443, Source: 0.0.0.0/0
+    - Type: Custom, Port: 8000, Source: 0.0.0.0/0
+  
+UserData: |
+  #!/bin/bash
+  apt-get update
+  apt-get install -y docker.io
+  systemctl start docker
+  systemctl enable docker
+  usermod -aG docker ubuntu
+  
+  # Run API
+  docker run -d \
+    --name gps-api \
+    --restart always \
+    -p 8000:8000 \
+    -e AWS_REGION=us-east-1 \
+    gps-inference:latest

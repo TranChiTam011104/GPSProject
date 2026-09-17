@@ -1,0 +1,76 @@
+# GitHub Actions - Deploy to EC2
+name: Deploy to EC2
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment (staging/production)'
+        required: true
+        default: 'staging'
+
+env:
+  PYTHON_VERSION: '3.10'
+
+jobs:
+  deploy:
+    name: Deploy to EC2
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+          
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+        
+      - name: Build and push Docker image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build -f docker/Dockerfile -t $ECR_REGISTRY/gps-inference:$IMAGE_TAG .
+          docker push $ECR_REGISTRY/gps-inference:$IMAGE_TAG
+          
+      - name: Deploy to EC2
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ubuntu
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            # Pull latest image
+            docker pull $ECR_REGISTRY/gps-inference:$IMAGE_TAG
+            
+            # Stop old container
+            docker stop gps-api || true
+            docker rm gps-api || true
+            
+            # Start new container
+            docker run -d \
+              --name gps-api \
+              --restart always \
+              -p 8000:8000 \
+              -e AWS_REGION=${{ secrets.AWS_REGION }} \
+              -e MODEL_VERSION=${{ github.event.inputs.environment == 'production' && 'v2' || 'v1' }} \
+              $ECR_REGISTRY/gps-inference:$IMAGE_TAG
+              
+            # Cleanup
+            docker system prune -f

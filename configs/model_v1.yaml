@@ -1,0 +1,35 @@
+# Model v1: Heuristic-based Home/Office classification
+# Baseline model - applies time-based rules directly on stay-points
+
+model:
+  name: heuristic_classifier
+  version: v1
+  description: Time-based heuristic for home/office detection
+
+# Stay-point thresholds
+stay_point:
+  time_threshold_minutes: 30
+  distance_threshold_meters: 200
+
+# Classification rules
+classification:
+  home:
+    hours:
+      start: 22  # 10 PM
+      end: 6     # 6 AM
+    confidence_indicator: time_spent_during_night
+
+  office:
+    hours:
+      start: 9  # 9 AM
+      end: 18   # 6 PM
+    days: [1, 2, 3, 4, 5]  # Monday to Friday
+    confidence_indicator: time_spent_during_workhours
+
+  poi:
+    confidence_indicator: frequency_and_duration
+
+# Location settings
+location:
+  timezone: Asia/Shanghai  # Beijing timezone (UTC+8)
+  geohash_precision: 6

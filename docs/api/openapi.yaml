@@ -1,0 +1,236 @@
+# API Documentation - OpenAPI Specification
+
+openapi: 3.0.3
+info:
+  title: GPS Home/Office Inference API
+  description: |
+    API for inferring Home, Office, and POI locations from GPS trajectories.
+    
+    ## Features
+    - Stay-point detection from raw GPS data
+    - Home/Office classification using time-based heuristics
+    - DBSCAN clustering for noise reduction (v2 model)
+    - Confidence scoring for classifications
+    - Privacy-preserving geohash encoding
+    
+    ## Models
+    - **v1**: Baseline heuristic (direct time-based rules)
+    - **v2**: DBSCAN clustering + heuristic (recommended)
+  version: 1.0.0
+  contact:
+    name: VSF Intern Team
+    email: intern@vsf.edu.vn
+
+servers:
+  - url: http://localhost:8000
+    description: Local development server
+  - url: https://api.example.com
+    description: Production server
+
+paths:
+  /health:
+    get:
+      summary: Health check
+      description: Check if the API is running
+      tags:
+        - Health
+      responses:
+        '200':
+          description: API is healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+
+  /v1/classify/{user_id}:
+    post:
+      summary: Classify user locations
+      description: |
+        Classify a user's GPS trajectory into Home, Office, and POI locations.
+        
+        The algorithm:
+        1. Processes stay-points to identify significant locations
+        2. Classifies locations based on time patterns
+        3. Returns classified locations with confidence scores
+      tags:
+        - Classification
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          description: Unique user identifier
+          schema:
+            type: string
+            example: "user_12345"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ClassificationRequest'
+            example:
+              stay_points:
+                - lat: 39.9847
+                  lng: 116.3184
+                  arrival_time: "2008-10-23T22:30:00"
+                  departure_time: "2008-10-24T06:45:00"
+                - lat: 39.9848
+                  lng: 116.3186
+                  arrival_time: "2008-10-24T09:00:00"
+                  departure_time: "2008-10-24T18:30:00"
+      responses:
+        '200':
+          description: Classification successful
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClassificationResponse'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /metrics:
+    get:
+      summary: Prometheus metrics
+      description: Get Prometheus-formatted metrics
+      tags:
+        - Monitoring
+      responses:
+        '200':
+          description: Metrics data
+          content:
+            text/plain:
+              schema:
+                type: string
+
+components:
+  schemas:
+    StayPointInput:
+      type: object
+      required:
+        - lat
+        - lng
+        - arrival_time
+        - departure_time
+      properties:
+        lat:
+          type: number
+          format: float
+          minimum: -90
+          maximum: 90
+          description: Latitude
+          example: 39.9847
+        lng:
+          type: number
+          format: float
+          minimum: -180
+          maximum: 180
+          description: Longitude
+          example: 116.3184
+        arrival_time:
+          type: string
+          format: date-time
+          description: Arrival timestamp
+          example: "2008-10-23T22:30:00"
+        departure_time:
+          type: string
+          format: date-time
+          description: Departure timestamp
+          example: "2008-10-24T06:45:00"
+
+    ClassificationRequest:
+      type: object
+      required:
+        - stay_points
+      properties:
+        stay_points:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/StayPointInput'
+        include_geohash:
+          type: boolean
+          default: true
+          description: Include geohash encoding in response
+
+    LocationOutput:
+      type: object
+      properties:
+        lat:
+          type: number
+          description: Latitude
+        lng:
+          type: number
+          description: Longitude
+        location_type:
+          type: string
+          enum: [home, office, poi, unknown]
+          description: Type of location
+        confidence:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: Confidence score
+        visit_count:
+          type: integer
+          description: Number of visits
+        duration_minutes:
+          type: number
+          description: Total duration at location
+        geohash:
+          type: string
+          description: Privacy-preserving geohash
+
+    ClassificationResponse:
+      type: object
+      properties:
+        user_id:
+          type: string
+        locations:
+          type: array
+          items:
+            $ref: '#/components/schemas/LocationOutput'
+        home:
+          $ref: '#/components/schemas/LocationOutput'
+        office:
+          $ref: '#/components/schemas/LocationOutput'
+        pois:
+          type: array
+          items:
+            $ref: '#/components/schemas/LocationOutput'
+        model_version:
+          type: string
+        processed_at:
+          type: string
+          format: date-time
+
+    HealthResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [healthy, ready]
+        version:
+          type: string
+        model_version:
+          type: string
+
+    ErrorResponse:
+      type: object
+      properties:
+        detail:
+          type: string
+        error_code:
+          type: string
+        timestamp:
+          type: string
+          format: date-time

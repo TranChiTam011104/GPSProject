@@ -1,0 +1,23 @@
+# AWS Lambda Configuration
+{
+  "FunctionName": "gps-inference-api",
+  "Runtime": "python3.10",
+  "Role": "arn:aws:iam::ACCOUNT_ID:role/lambda-execution-role",
+  "Handler": "src.api.lambda_handler.handler",
+  "Code": {
+    "S3Bucket": "your-deployment-bucket",
+    "S3Key": "gps-inference-lambda.zip"
+  },
+  "MemorySize": 512,
+  "Timeout": 30,
+  "Environment": {
+    "Variables": {
+      "MODEL_VERSION": "v2",
+      "ENVIRONMENT": "production",
+      "AWS_REGION": "us-east-1"
+    }
+  },
+  "TracingConfig": {
+    "Mode": "Active"
+  }
+}

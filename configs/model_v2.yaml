@@ -1,0 +1,58 @@
+# Model v2: DBSCAN-based clustering + Heuristic
+# Clusters nearby stay-points before applying classification
+
+model:
+  name: cluster_heuristic_classifier
+  version: v2
+  description: DBSCAN clustering followed by time-based heuristic
+
+# Stay-point detection
+stay_point:
+  time_threshold_minutes: 30
+  distance_threshold_meters: 200
+
+# DBSCAN clustering parameters
+clustering:
+  algorithm: dbscan
+  eps_meters: 100  # Maximum distance between points in a cluster
+  min_samples: 3   # Minimum points to form a cluster
+
+  # Haversine metric for geographic distance
+  metric: haversine
+  algorithm_params:
+    leaf_size: 30
+    n_jobs: -1
+
+# Post-clustering aggregation
+aggregation:
+  # Aggregate stay-points within same cluster
+  compute_centroid: true
+  weighted_by_duration: true
+
+# Classification rules (applied on aggregated clusters)
+classification:
+  home:
+    hours:
+      start: 22
+      end: 6
+    min_visit_ratio: 0.3  # Minimum ratio of visits during home hours
+
+  office:
+    hours:
+      start: 9
+      end: 18
+    days: [1, 2, 3, 4, 5]
+    min_visit_ratio: 0.4
+
+# Confidence calculation
+confidence:
+  method: density_based
+  factors:
+    - time_spent_ratio
+    - visit_frequency
+    - cluster_size
+
+# Location settings
+location:
+  timezone: Asia/Shanghai
+  geohash_precision: 6

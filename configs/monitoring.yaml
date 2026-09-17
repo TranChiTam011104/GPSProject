@@ -1,0 +1,69 @@
+# Monitoring Configuration
+
+# Metrics collection
+metrics:
+  enabled: true
+  port: 9090
+  path: /metrics
+
+  # Latency buckets (in seconds)
+  latency_buckets:
+    - 0.01
+    - 0.025
+    - 0.05
+    - 0.1
+    - 0.25
+    - 0.5
+    - 1.0
+    - 2.5
+    - 5.0
+    - 10.0
+
+# CloudWatch (AWS)
+cloudwatch:
+  enabled: true
+  namespace: GPSInference
+  log_group: /aws/lambda/gps-inference
+  metrics:
+    - RequestCount
+    - RequestLatency
+    - ErrorCount
+    - ClassificationCount
+
+# Prometheus (if self-hosted)
+prometheus:
+  enabled: false
+  pushgateway_url: http://localhost:9091
+
+# Drift Detection
+drift_detection:
+  enabled: true
+  
+  # Metrics to monitor
+  metrics:
+    - location_distribution
+    - trajectory_pattern
+    - classification_ratio
+
+  # Thresholds
+  thresholds:
+    psi_threshold: 0.2  # Population Stability Index
+    kl_divergence_threshold: 0.1
+    
+  # Detection window
+  window:
+    size: 1000  # Number of requests
+    slide: 500  # Slide by this many
+
+  # Alerts
+  alerts:
+    enabled: true
+    channels:
+      - cloudwatch_alarm
+      - log
+
+# Logging
+logging:
+  access_log: true
+  error_log: true
+  structured: true
