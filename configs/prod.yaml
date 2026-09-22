@@ -1,0 +1,28 @@
+# Production configuration — read when GPS_ENV=prod (Cloud Run / ECS / k8s).
+# Intentionally tighter thresholds + WARNING log level.
+
+stay_point:
+  time_threshold_minutes: 20
+  distance_threshold_meters: 250
+
+clustering:
+  eps_meters: 150.0
+  min_samples: 5
+
+classification:
+  home_hour_start: 22
+  home_hour_end: 6
+  office_hour_start: 9
+  office_hour_end: 18
+  work_days: [0, 1, 2, 3, 4]
+  min_confidence: 0.4
+  min_duration_minutes: 45.0
+  top_poi_n: 5
+  geohash_precision: 6
+
+api:
+  host: "0.0.0.0"
+  port: 8080
+  workers: 2
+  log_level: "WARNING"
+  cors_origins: ["https://your-domain.example"]

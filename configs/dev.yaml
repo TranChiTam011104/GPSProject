@@ -1,0 +1,28 @@
+# Default local development configuration.
+# Picked up automatically when GPS_ENV=dev (the default).
+
+stay_point:
+  time_threshold_minutes: 30
+  distance_threshold_meters: 200
+
+clustering:
+  eps_meters: 100.0
+  min_samples: 3
+
+classification:
+  home_hour_start: 22
+  home_hour_end: 6
+  office_hour_start: 9
+  office_hour_end: 18
+  work_days: [0, 1, 2, 3, 4]
+  min_confidence: 0.3
+  min_duration_minutes: 30.0
+  top_poi_n: 5
+  geohash_precision: 6
+
+api:
+  host: "0.0.0.0"
+  port: 8080
+  workers: 1
+  log_level: "INFO"
+  cors_origins: ["*"]
