@@ -259,3 +259,63 @@ class TestMaxGap:
     def test_recordings_starting_far_apart_give_no_stay(self):
         df = self._two_recordings(gap_hours=10, second_lat=self.HOME[0] + 0.05)  # ~5.5 km
         assert StayPointDetector(30, 200).detect(df) == []
+
+
+class TestStayPointsToFrame:
+    """Bảng stay-point: giờ địa phương theo múi giờ của tâm (notebook 09)."""
+
+    @staticmethod
+    def _stay(lat, lon, start):
+        import pandas as pd
+        times = pd.date_range(start, periods=41, freq="1min")
+        df = pd.DataFrame({"datetime": times, "lat": lat, "lon": lon})
+        return StayPointDetector().detect(df)
+
+    def test_beijing_local_time_is_gmt_plus_8(self):
+        import pandas as pd
+
+        from gps.features.stay_point import STAY_POINT_COLUMNS, stay_points_to_frame
+        df = stay_points_to_frame(self._stay(39.9847, 116.3184, "2008-05-01 16:30"), "010")
+        assert list(df.columns) == STAY_POINT_COLUMNS
+        assert len(df) == 1
+        row = df.iloc[0]
+        assert row["user_id"] == "010"
+        assert row["tz_name"] == "Asia/Shanghai"
+        assert row["arrival_local"] == pd.Timestamp("2008-05-02 00:30")       # qua nửa đêm giờ Bắc Kinh
+        assert row["departure_local"] - row["arrival_local"] == pd.Timedelta(minutes=40)
+
+    def test_seattle_summer_uses_daylight_saving(self):
+        import pandas as pd
+
+        from gps.features.stay_point import stay_points_to_frame
+        df = stay_points_to_frame(self._stay(47.6062, -122.3321, "2008-07-01 20:00"), "160")
+        assert df.iloc[0]["tz_name"] == "America/Los_Angeles"
+        assert df.iloc[0]["arrival_local"] == pd.Timestamp("2008-07-01 13:00")  # GMT-7 (giờ mùa hè)
+
+    def test_no_stay_points_gives_empty_frame_with_schema(self):
+        from gps.features.stay_point import STAY_POINT_COLUMNS, stay_points_to_frame
+        df = stay_points_to_frame([], "049")
+        assert df.empty
+        assert list(df.columns) == STAY_POINT_COLUMNS
+        assert str(df["arrival_local"].dtype).startswith("datetime64")
+
+
+class TestAltitude:
+    """altitude_m = trung bình các độ cao hợp lệ; NaN khi cả cửa sổ không có độ cao."""
+
+    @staticmethod
+    def _track(altitudes):
+        import pandas as pd
+        times = pd.date_range("2008-05-01 10:00", periods=len(altitudes), freq="1min")
+        return pd.DataFrame({"datetime": times, "lat": 39.9847, "lon": 116.3184, "altitude_m": altitudes})
+
+    @pytest.mark.parametrize("mode", [DistanceMode.ANCHOR, DistanceMode.CENTROID])
+    def test_missing_first_altitude_is_skipped(self, mode):
+        alts = [float("nan")] + [50.0] * 40
+        assert StayPointDetector(30, 200, mode).detect(self._track(alts))[0].altitude_m == pytest.approx(50.0)
+
+    @pytest.mark.parametrize("mode", [DistanceMode.ANCHOR, DistanceMode.CENTROID])
+    def test_no_altitude_gives_nan(self, mode):
+        import math
+        sps = StayPointDetector(30, 200, mode).detect(self._track([float("nan")] * 41))
+        assert math.isnan(sps[0].altitude_m)

@@ -5,16 +5,23 @@ Integration tests trên dữ liệu GeoLife thật: cleaning pipeline -> stay-po
 Thay cho các script khám phá cũ (test_check_output, test_debug_staypoint,
 test_heuristic_classifier, test_staypoint_on_processed, test_thresholds).
 """
+import shutil
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pytest
 
-from gps.data.processing import clean_trajectory
-from gps.features.stay_point import DistanceMode, StayPointDetector
+from gps.data.processing import clean_trajectory, process_all_trajectories
+from gps.features.stay_point import (
+    MAX_GAP_HOURS,
+    DistanceMode,
+    StayPointDetector,
+    stay_points_to_frame,
+)
 from gps.models.base import ClassificationResult
 from gps.models.heuristic import HeuristicClassifier
+from gps.utils.geo import haversine_meters
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 RAW_DIR_CANDIDATES = [
@@ -82,6 +89,48 @@ class TestStayPointAndClassifier:
             for sp in sps:
                 assert t_min <= pd.Timestamp(sp.arrival_time) <= pd.Timestamp(sp.departure_time) <= t_max
                 assert sp.duration_minutes >= 30
+
+    def test_stay_points_satisfy_detector_definition(self, stay_points):
+        """Các tính chất bắt buộc của stay-point, kiểm với chính các điểm GPS của nó
+        (notebooks/10_staypoint_validation.ipynb chạy cùng phép kiểm trên cả 182 user)."""
+        detector = StayPointDetector()
+        for df, sps in stay_points:
+            d = df.sort_values("datetime")
+            ts, la, lo = d["datetime"].to_numpy(), d["lat"].to_numpy(), d["lon"].to_numpy()
+            assert sps, "user 010 phải có stay-point"
+            for prev, sp in zip([None, *sps[:-1]], sps, strict=True):
+                if prev is not None:
+                    assert prev.departure_time < sp.arrival_time                  # không chồng thời gian
+                i0 = np.searchsorted(ts, np.datetime64(sp.arrival_time), "left")
+                i1 = np.searchsorted(ts, np.datetime64(sp.departure_time), "right") - 1
+                wl, wo = la[i0:i1 + 1], lo[i0:i1 + 1]
+                assert ts[i0] == np.datetime64(sp.arrival_time)
+                assert ts[i1] == np.datetime64(sp.departure_time)
+                assert len(wl) == sp.num_points
+                assert haversine_meters(wl.mean(), wo.mean(), sp.lat, sp.lon) < 0.01
+                assert np.diff(ts[i0:i1 + 1]).max() <= np.timedelta64(int(MAX_GAP_HOURS * 3600), "s")
+                # tâm tại lúc điểm k được thêm vào = trung bình các điểm 0..k-1
+                n = np.arange(1, len(wl))
+                run = zip(np.cumsum(wl)[:-1] / n, np.cumsum(wo)[:-1] / n, wl[1:], wo[1:], strict=True)
+                assert all(haversine_meters(*r) <= detector.distance_threshold_m + 1e-6 for r in run)
+                if i1 + 1 < len(ts) and ts[i1 + 1] - ts[i1] <= np.timedelta64(int(MAX_GAP_HOURS * 3600), "s"):
+                    assert haversine_meters(sp.lat, sp.lon, la[i1 + 1], lo[i1 + 1]) > detector.distance_threshold_m
+                assert 0 <= sp.observed_minutes <= sp.duration_minutes
+
+    def test_pipeline_writes_stay_points(self, tmp_path, stay_points):
+        """process_all_trajectories ghi data/processed/staypoints/user_{id}.parquet, đúng bằng
+        stay-point của detector trên cùng các điểm sạch."""
+        user_dir = tmp_path / "raw" / USER / "Trajectory"
+        user_dir.mkdir(parents=True)
+        for f in _plt_files(USER):
+            shutil.copy(f, user_dir / f.name)
+        result = process_all_trajectories(tmp_path / "raw", tmp_path / "processed" / "users", n_workers=2)
+        written = pd.read_parquet(tmp_path / "processed" / "staypoints" / f"user_{USER}.parquet")
+        points = pd.read_parquet(tmp_path / "processed" / "users" / f"user_{USER}.parquet")
+        assert points["datetime"].is_monotonic_increasing          # thứ tự cố định, không theo file nào xong trước
+        (_, sps), = stay_points
+        assert result["n_stay_points"] == len(written) == len(sps)
+        pd.testing.assert_frame_equal(written, stay_points_to_frame(sps, USER), check_dtype=False)
 
     def test_classifier_runs_on_detected_stay_points(self, stay_points):
         all_sps = [sp for _, sps in stay_points for sp in sps]

@@ -42,14 +42,22 @@ Data processing pipeline (GeoLife raw `.plt` → cleaned Parquet):
 python scripts/run_processing.py                       # full run, all users
 python scripts/run_processing.py --user 010 --verbose   # smoke test on one user
 python scripts/run_processing.py --clean --workers 2    # wipe output dir first
+python scripts/run_processing.py --no-stay-points       # clean points only, skip stay-point detection
 python -m gps.data.processing --data-dir data/raw       # same pipeline via the module CLI
+```
+
+Notebooks (EDA / evidence) — run with a real kernel and save outputs into the `.ipynb` (needs the `nbclient` dev extra; heavy steps are cached under `notebooks/outputs/<nb>/cache/`, so re-runs are fast):
+
+```bash
+python scripts/run_notebooks.py notebooks/07_staypoint_thresholds.ipynb   # one notebook
+python scripts/run_notebooks.py notebooks/*.ipynb                        # all of them, in order
 ```
 
 ## Architecture
 
 ### Data pipeline (`src/gps/data/processing.py`)
 
-Converts raw GeoLife `.plt` files into partitioned Parquet (`data/processed/users/user_{id}.parquet`). Processes users **sequentially** (not all in parallel) with a `ProcessPoolExecutor` scoped to each user's files, writing+`gc.collect()`-ing after each user — this is a deliberate memory/thermal safeguard (see the module docstring; a prior version OOM'd/overheated the dev machine processing all 182 users at once).
+Converts raw GeoLife `.plt` files into partitioned Parquet (`data/processed/users/user_{id}.parquet`), then detects each user's stay-points on all of that user's clean points and writes `data/processed/staypoints/user_{id}.parquet` (`stay_points_to_frame`, schema `STAY_POINT_COLUMNS`: GMT `arrival`/`departure`, `arrival_local`/`departure_local` + `tz_name` from the stay's centroid, `duration_minutes`, `observed_minutes`, `num_points`, ...; an empty file means the user was processed and has no stay-point). The stay-point files are the classifier's input. Processes users **sequentially** (not all in parallel) with a `ProcessPoolExecutor` scoped to each user's files, writing+`gc.collect()`-ing after each user — this is a deliberate memory/thermal safeguard (see the module docstring; a prior version OOM'd/overheated the dev machine processing all 182 users at once).
 
 There is **one** cleaning pipeline, `clean_trajectory(plt_path, user_id)`, per `.plt` file: load → physical-bounds filter → resolve duplicate timestamps → remove speed spikes → re-check duplicate groups whose anchors were spikes → clean altitude → segment (time gap or impossible jump) → localize timezone. Its output is the single definition of "clean data" and the only input to stay-point detection and the classifier. The former "full" pipeline (per-point kinematics, a 180 km/h drift filter, transport-mode labels) was deleted: no task in scope used it, and the 180 km/h filter had no evidence and dropped 57% of airplane / 3.6% of train points. Transport-mode labels (`labels.txt`) are read only inside notebooks, for EDA/validation. Re-add such steps only with evidence and a consumer.
 
@@ -87,6 +95,8 @@ GeoLife `.plt` timestamps are **naive GMT**. `gps/data/timezone.py::localize_by_
 
 CENTROID windows keep short approach/leave tails: 68.5% of stays have a point > 200 m from the final centroid, because each point is only checked against the centroid at the moment it joins. Trimming them was measured and rejected (`notebooks/07_staypoint_thresholds.ipynb` section 4): it moves the centroid a median 14 m (below GPS noise), arrival/departure by < 0.3 min, recall −0.3 pt and false stays −5%, so an extra rule buys nothing measurable.
 
+Stay-point correctness (`notebooks/10_staypoint_validation.ipynb`): all 18,597 stays satisfy 9 required properties (mutation-tested; same checks in `test_stay_points_satisfy_detector_definition`), and a blind audit of 60 stratified stays by the user gives precision 92% (95% CI 75–98%), 90.6% of dwell time correct. The only error type is slow movement along a road for 30–45 min; a shape criterion could filter it but needs its own evidence — revisit only if the classifier is affected. Audit page: https://claude.ai/artifact/2ncyaQ5UxAppi4fvmTN9i3 (verdicts in its db collection `verdicts`).
+
 Cleaning barely moves stay-points (`notebooks/05_staypoint_cleaning_impact.ipynb`, all users): file chaining is the decisive step (joining all files gave stays up to 1,459 days), duplicate resolution changes 0.8% of stays (mostly by ~1 m; the rest are stays re-joined once an ambiguous group is quarantined, or windows sitting exactly at the 200 m edge), spike removal changes none. 7 users have no stay-point at all, so the classifier needs an "unknown" result. Known open data question: 821 `.plt` recordings are byte-identical across 52 users (~1.5 M redundant points, e.g. 153/163, 126/167, 000/003). Byte-identical means one device's log copied to two users (two devices travelling together would still differ by GPS noise and timing); the likely reason is that the users travelled together, in which case the trip legitimately belongs to both. Not handled — it needs its own notebook before any rule.
 
 Gaps (no GPS points for > 20 min) *inside* a stay-point are deliberately **not** split: `notebooks/06_gaps_inside_staypoints.ipynb` shows the device resumes a few tens of metres from where it stopped, labelled trips fall entirely inside such gaps in only 0.2–1.9% of cases, and cutting at 1–3 h would drop 27–55% of dwell-time. Each `StayPoint` therefore carries both `duration_minutes` (arrival→departure) and `observed_minutes` (excluding gaps > `unobserved_gap_seconds` = 1200 s), so downstream consumers can check sensitivity to unobserved time.
@@ -113,7 +123,7 @@ Layered Pydantic Settings: module defaults → `configs/{GPS_ENV}.yaml` (default
 
 ### Notebooks vs. production code
 
-Notebooks are EDA / design-validation only; production never imports them. `notebooks/README.md` is the index: one notebook per decision, numbered in dependency order (01 speed threshold → 02 duplicates → 03 segment gap → 04 file boundaries → 05 cleaning impact on stay-points → 06 gaps inside stay-points → 07 stay-point thresholds → 08 jumps → 09 timezone), each citing the `src/` code it justifies. Conventions: narrative in Vietnamese markdown; code, file names, figure/axis titles and table columns in English; outputs under `notebooks/outputs/<notebook>/{figures,tables,cache,maps}` with `cache/` and `maps/` git-ignored. `notebooks/archive/` holds superseded early exploration (the original cleaning prototype and the old stay-point threshold notebook). When a decision changes, update its notebook first, then `src/`.
+Notebooks are EDA / design-validation only; production never imports them. `notebooks/README.md` is the index: one notebook per decision, numbered in dependency order (01 speed threshold → 02 duplicates → 03 segment gap → 04 file boundaries → 05 cleaning impact on stay-points → 06 gaps inside stay-points → 07 stay-point thresholds → 08 jumps → 09 timezone → 10 stay-point validation), each citing the `src/` code it justifies. Conventions: narrative in Vietnamese markdown; code, file names, figure/axis titles and table columns in English; outputs under `notebooks/outputs/<notebook>/{figures,tables,cache,maps}` with `cache/` and `maps/` git-ignored. `notebooks/archive/` holds superseded early exploration (the original cleaning prototype and the old stay-point threshold notebook). When a decision changes, update its notebook first, then `src/`.
 
 ## Notes
 

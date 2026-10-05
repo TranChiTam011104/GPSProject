@@ -51,6 +51,13 @@ class DistanceMode(str, Enum):
     CENTROID = "centroid"
 
 
+def _mean_altitude(alts: list) -> float:
+    """Trung bình các độ cao hợp lệ trong cửa sổ (bỏ None / NaN); NaN nếu không có
+    giá trị nào - không dùng 0.0, vì 0 m là một độ cao có thật."""
+    valid = [a for a in alts if a is not None and a == a]
+    return float(sum(valid) / len(valid)) if valid else float("nan")
+
+
 # ── Output value objects ─────────────────────────────────────────────────────
 
 
@@ -64,7 +71,7 @@ class StayPoint:
     departure_time: datetime
     duration_minutes: float
     num_points: int = 1
-    altitude_m: float = 0.0  # mean of the points inside the stay-point window
+    altitude_m: float = float("nan")  # mean of the valid altitudes in the window; NaN if none
     # Phần của duration_minutes thực sự có điểm GPS: bỏ các khoảng ngắt >
     # unobserved_gap_seconds giữa 2 điểm liên tiếp. None nếu không tính.
     observed_minutes: float | None = None
@@ -281,9 +288,7 @@ class StayPointDetector:
         if window_span >= self.time_threshold:
             final_centroid_lat = sum_lat / num_pts
             final_centroid_lon = sum_lon / num_pts
-            window_alts = [alts[start_idx]] if alts[start_idx] is not None else []
-            window_alts += [x for x in alts[start_idx + 1:end_idx + 1] if x is not None and x == x]  # bỏ NaN
-            mean_alt = float(sum(window_alts) / len(window_alts)) if window_alts else 0.0
+            mean_alt = _mean_altitude(alts[start_idx:end_idx + 1])
 
             stay_points.append(
                 StayPoint(
@@ -323,8 +328,7 @@ class StayPointDetector:
         centroid_lon = float(sum(window_lon) / num_pts)
 
         # Mean altitude over the window, ignoring None / NaN.
-        alt_values = [a for a in window_alt if a is not None and a == a]
-        mean_alt = float(sum(alt_values) / len(alt_values)) if alt_values else 0.0
+        mean_alt = _mean_altitude(window_alt)
 
         anchor_ts = timestamps[start_idx]
 
@@ -341,3 +345,38 @@ class StayPointDetector:
             )
         )
         return stay_points
+
+
+# ── Tabular output ──────────────────────────────────────────────────────────
+
+STAY_POINT_COLUMNS = [
+    "user_id", "arrival", "departure", "arrival_local", "departure_local", "tz_name",
+    "lat", "lon", "duration_minutes", "observed_minutes", "num_points", "altitude_m",
+]
+
+
+def stay_points_to_frame(stay_points: list[StayPoint], user_id: str) -> pd.DataFrame:
+    """Bảng stay-point của 1 user, schema ``STAY_POINT_COLUMNS``.
+
+    ``arrival`` / ``departure`` là GMT naive như dữ liệu GeoLife. Giờ địa phương
+    (naive) và ``tz_name`` lấy theo múi giờ của **tâm** stay-point
+    (notebooks/09_timezone_by_location.ipynb), nên dùng được cả khi đầu vào chỉ có
+    lat/lon/giờ GMT (API), không cần cột ``timestamp_local`` của từng điểm.
+    """
+    from gps.data.timezone import localize_by_location
+
+    df = pd.DataFrame(
+        [{"user_id": user_id, "arrival": pd.Timestamp(sp.arrival_time), "departure": pd.Timestamp(sp.departure_time),
+          "lat": sp.lat, "lon": sp.lon, "duration_minutes": sp.duration_minutes,
+          "observed_minutes": sp.observed_minutes, "num_points": sp.num_points, "altitude_m": sp.altitude_m}
+         for sp in stay_points],
+        columns=[c for c in STAY_POINT_COLUMNS if c not in ("arrival_local", "departure_local", "tz_name")],
+    )
+    if df.empty:
+        return df.reindex(columns=STAY_POINT_COLUMNS).astype(
+            {"arrival": "datetime64[ns]", "departure": "datetime64[ns]", "arrival_local": "datetime64[ns]",
+             "departure_local": "datetime64[ns]", "tz_name": object, "lat": float, "lon": float,
+             "duration_minutes": float, "observed_minutes": float, "num_points": "int64", "altitude_m": float})
+    df = localize_by_location(df, column="arrival", output_column="arrival_local")
+    df = localize_by_location(df, column="departure", output_column="departure_local")
+    return df[STAY_POINT_COLUMNS]

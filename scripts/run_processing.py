@@ -6,6 +6,8 @@ Thin wrapper around `python -m gps.data.processing` that:
 2. Picks sane defaults that match the GeoLife layout on disk.
 3. Optionally limits to a single user (for smoke-testing).
 4. Optionally wipes the output directory before re-running.
+5. Writes stay-points per user to ``data/processed/staypoints/`` (skip with
+   ``--no-stay-points``).
 
 Usage examples
 --------------
@@ -90,6 +92,11 @@ def _build_argparser() -> argparse.ArgumentParser:
         help="Xóa sạch --output-dir trước khi chạy (KHÔNG xóa data thô).",
     )
     p.add_argument(
+        "--no-stay-points",
+        action="store_true",
+        help="Không tìm stay-point (chỉ làm sạch điểm GPS).",
+    )
+    p.add_argument(
         "--verbose", "-v",
         action="store_true",
         help="Bật DEBUG logging.",
@@ -147,6 +154,7 @@ def main(argv: list[str] | None = None) -> int:
         output_dir=output_dir,
         n_workers=args.workers,
         thresholds=thresholds,
+        detect_stay_points=not args.no_stay_points,
     )
     elapsed = (datetime.now() - start).total_seconds()
 
@@ -159,6 +167,7 @@ def main(argv: list[str] | None = None) -> int:
     log.info("  Tổng điểm:        %s", f"{result['total_rows']:,}")
     log.info("  Số user:          %d", result["n_users"])
     log.info("  Điểm quarantine:  %s", f"{result['n_quarantined']:,}")
+    log.info("  Stay-point:       %s", f"{result['n_stay_points']:,}")
     log.info("  Output dir:       %s", result["output_dir"])
     log.info("  Thời gian:        %.1f s (%.1f phút)", elapsed, elapsed / 60)
     log.info("=" * 60)

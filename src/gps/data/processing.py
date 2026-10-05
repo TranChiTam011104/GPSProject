@@ -25,8 +25,14 @@ Các bước (cho từng file .plt):
                                 hoặc bước nhảy > 1100 km/h (giữ điểm, ngắt nối)
   7. Localize timezone        - GMT -> giờ địa phương theo toạ độ (cột tz_name, timestamp_local)
 
+Sau đó, cho từng user: stay-point trên mọi điểm sạch của user (StayPointDetector
+mặc định: 200 m / 30 phút, cắt tại khoảng ngắt > 18 h; notebooks 04-10).
+
 Output: Partitioned Apache Parquet -> data/processed/users/user_{user_id}.parquet
         Điểm bị loại ở bước 3-4 -> data/processed/quarantine/user_{user_id}.csv
+        Stay-point              -> data/processed/staypoints/user_{user_id}.parquet
+                                   (schema STAY_POINT_COLUMNS; file rỗng nếu user
+                                   không có stay-point nào)
 """
 
 from __future__ import annotations
@@ -684,25 +690,20 @@ def _process_single_user(
 
 def _write_single_user_parquet(
     user_id: str,
-    user_dfs: list[pd.DataFrame],
+    df_user: pd.DataFrame,
     output_dir: Path,
 ) -> int:
     """
-    Ghi các DataFrame của một user thành 1 file parquet.
+    Ghi điểm sạch của một user thành 1 file parquet.
 
     Args:
         user_id     : ID của user
-        user_dfs    : List các DataFrame đã xử lý của user
+        df_user     : mọi điểm sạch của user (các file .plt đã nối)
         output_dir  : Thư mục output
 
     Returns:
         Số dòng đã ghi
     """
-    if not user_dfs:
-        return 0
-
-    # Concatenate chỉ những file của user này - RAM chỉ chứa 1 user tại 1 thời điểm
-    df_user = pd.concat(user_dfs, ignore_index=True)
     total_rows = len(df_user)
 
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -727,6 +728,22 @@ def _write_single_user_parquet(
     )
 
     return total_rows
+
+
+def _write_single_user_stay_points(
+    user_id: str,
+    df_user: pd.DataFrame,
+    stay_dir: Path,
+) -> int:
+    """Stay-point của 1 user trên mọi điểm sạch (detector tự cắt tại khoảng ngắt
+    > 18 h) -> parquet. Ghi cả khi không có stay-point nào (file rỗng đúng schema),
+    để phân biệt "đã xử lý, 0 stay-point" với "chưa xử lý". Trả về số stay-point."""
+    from gps.features.stay_point import StayPointDetector, stay_points_to_frame
+
+    stays = stay_points_to_frame(StayPointDetector().detect(df_user), user_id)
+    stay_dir.mkdir(parents=True, exist_ok=True)
+    stays.to_parquet(stay_dir / f"user_{user_id}.parquet", index=False)
+    return len(stays)
 
 
 def _write_single_user_quarantine(
@@ -767,6 +784,7 @@ def process_all_trajectories(
     n_workers: int | None = None,
     thresholds: CleaningThresholds = DEFAULT_THRESHOLDS,
     max_users: int | None = None,
+    detect_stay_points: bool = True,
 ) -> dict:
     """
     Làm sạch toàn bộ file .plt trong data_dir - TUẦN TỰ THEO USER.
@@ -782,14 +800,16 @@ def process_all_trajectories(
                      của 1 user
         output_dir : thư mục chứa các file user_*.parquet
                      [default: data_dir.parent/processed/users/]
-                     Điểm bị loại được ghi vào output_dir.parent/quarantine/
+                     Điểm bị loại được ghi vào output_dir.parent/quarantine/,
+                     stay-point vào output_dir.parent/staypoints/
         n_workers  : số CPU worker (mặc định: min(4, os.cpu_count()))
         thresholds : ngưỡng thuật toán
         max_users  : chỉ xử lý N user đầu tiên (mặc định: tất cả)
+        detect_stay_points : tìm và ghi stay-point cho từng user (mặc định: có)
 
     Returns:
-        Dict tổng kết với keys: total_rows, n_users, n_quarantined, output_dir
-        ({} nếu không tìm thấy file .plt nào).
+        Dict tổng kết với keys: total_rows, n_users, n_quarantined, n_stay_points,
+        output_dir ({} nếu không tìm thấy file .plt nào).
     """
     data_dir = Path(data_dir)
     output_dir = Path(output_dir) if output_dir is not None else data_dir.parent / "processed" / "users"
@@ -812,8 +832,10 @@ def process_all_trajectories(
 
     output_dir.mkdir(parents=True, exist_ok=True)
     quarantine_dir = output_dir.parent / "quarantine"
+    stay_dir = output_dir.parent / "staypoints"
     total_rows = 0
     total_quarantined = 0
+    total_stay_points = 0
     processed_users = 0
 
     for k, (user_id, plt_paths) in enumerate(sorted(users.items()), start=1):
@@ -835,14 +857,21 @@ def process_all_trajectories(
             log.warning("  User %s: không có file nào xử lý thành công.", user_id)
             continue
 
-        user_rows = _write_single_user_parquet(user_id, user_dfs, output_dir)
+        # Nối chỉ những file của user này - RAM chỉ chứa 1 user tại 1 thời điểm. Các file xong
+        # theo thứ tự bất kỳ (as_completed), nên sắp lại để output giống hệt nhau giữa các lần chạy.
+        df_user = pd.concat(user_dfs, ignore_index=True).sort_values(
+            [COL_SOURCE_FILE, COL_DATETIME], kind="stable", ignore_index=True)
+        del user_dfs
+        user_rows = _write_single_user_parquet(user_id, df_user, output_dir)
         total_rows += user_rows
+        n_sp = _write_single_user_stay_points(user_id, df_user, stay_dir) if detect_stay_points else 0
+        total_stay_points += n_sp
 
         # Giải phóng RAM ngay sau mỗi user
-        del user_dfs
+        del df_user
         gc.collect()
 
-        log.info("  User %s: %d dòng đã ghi. RAM đã giải phóng.", user_id, user_rows)
+        log.info("  User %s: %d dòng, %d stay-point đã ghi. RAM đã giải phóng.", user_id, user_rows, n_sp)
         processed_users += 1
 
     parquet_files = list(output_dir.glob("user_*.parquet"))
@@ -852,11 +881,14 @@ def process_all_trajectories(
     log.info("  Tổng dòng GPS: %d", total_rows)
     log.info("  Tổng kích thước: %.1f MB", total_size_mb)
     log.info("  Điểm quarantine: %d (-> %s)", total_quarantined, quarantine_dir)
+    if detect_stay_points:
+        log.info("  Stay-point: %d (-> %s)", total_stay_points, stay_dir)
 
     return {
         "total_rows": total_rows,
         "n_users": processed_users,
         "n_quarantined": total_quarantined,
+        "n_stay_points": total_stay_points,
         "output_dir": output_dir,
     }
 
@@ -901,6 +933,11 @@ def _build_argparser() -> argparse.ArgumentParser:
              "VD: --max-users 50 để chỉ xử lý 50 user đầu tiên.",
     )
     p.add_argument(
+        "--no-stay-points",
+        action="store_true",
+        help="Không tìm stay-point (chỉ làm sạch điểm GPS)",
+    )
+    p.add_argument(
         "--verbose", "-v",
         action="store_true",
         help="Bật log DEBUG",
@@ -922,6 +959,7 @@ if __name__ == "__main__":
         n_workers=args.workers,
         thresholds=CleaningThresholds(max_gap_seconds=args.gap_seconds),
         max_users=args.max_users,
+        detect_stay_points=not args.no_stay_points,
     )
     elapsed = (datetime.now() - start).total_seconds()
 
@@ -932,5 +970,6 @@ if __name__ == "__main__":
     log.info("  Tổng điểm GPS:    %s", f"{result['total_rows']:,}")
     log.info("  Số users:          %d", result["n_users"])
     log.info("  Điểm quarantine:   %d", result["n_quarantined"])
+    log.info("  Stay-point:        %d", result["n_stay_points"])
     log.info("  Output dir:        %s", result["output_dir"])
     log.info("  Thời gian xử lý:  %.1f s (%.1f phút)", elapsed, elapsed / 60)

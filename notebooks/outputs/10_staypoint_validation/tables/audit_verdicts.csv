@@ -1,0 +1,61 @@
+id,verdict,reasons,note
+s01,correct,,
+s02,correct,,Theo thông tin tôi tìm kiếm thì đây là khu vực nhà ở kèm theo tiện ích. Nhưng do thời gian ghi nhận quá ít chỉ có 4 điểm trong vòng 3 tiếng 2 phút. nên tôi nghi là từ nơi khác đến mua sắm ăn uống v.v sau đó rời đi và khoảng thời gian đến và đi cũng khá hợp lí nếu đi chơi
+s03,correct,,
+s04,correct,,
+s05,correct,,theo ảnh vệ tinh thì đây là trường đại học thanh hoa
+s06,correct,,
+s07,correct,,
+s08,correct,,
+s09,correct,,
+s10,correct,,
+s11,correct,,Theo ảnh vệ tinh thì đây là 1 sân vận động.
+s12,correct,,theo ảnh về tinh khá tương đồng với khu vực chung cư nhà ở
+s13,correct,,
+s14,correct,,
+s15,correct,,
+s16,correct,,
+s17,correct,,
+s18,correct,,
+s19,correct,,
+s20,correct,,
+s21,correct,,
+s22,wrong,moving_slowly,theo trên vệ tính tôi thấy nó là 1 đường lớn đi. Nên tôi nghĩ giai đoạn ghi GPS này là đang kẹt xe hoặc thế nào đó
+s23,correct,,
+s24,correct,,theo hình thì tôi thấy tọa độ gần khu vực ngân hàng
+s25,correct,,
+s26,correct,,
+s27,correct,,
+s28,correct,,đây là ở yên đợi tàu hỏa. Theo open street map đây là trên đường ray tàu
+s29,wrong,moving_slowly,"cái này là stay-point do đúng ngưỡng, nhưng dựa trên nhãn được đánh là xe buýt thì đây là di chuyển chậm đón khách của xe buýt"
+s30,correct,,
+s31,correct,,
+s32,correct,,
+s33,correct,,
+s34,unsure,moving_slowly,
+s35,wrong,moving_slowly,hình ảnh thuộc khu vực vùng núi
+s36,unsure,moving_slowly,theo gps thấy các điểm được trải thành 1 đường khá thẳng.
+s37,unsure,moving_slowly,các điểm gps bị trải thành 1 đường thẳng
+s38,correct,,
+s39,correct,,
+s40,unsure,,ảnh vệ tính cho thấy đang ở 1 đường lớn. và các đường màu cam có xu hướng xếp thành hàng giống đang đi ngoài đường
+s41,wrong,moving_slowly,
+s42,correct,,
+s43,correct,,
+s44,correct,,theo hình ảnh từ vệ tính thì thấy ngay khi nhà. và thời gian cũng tương đối lâu
+s45,correct,,theo các điểu thì chỉ có 1 cụm nhỏ tập trung còn các điểm kia như xếp thành 1 con đường. Đây là khuông viên trường đại học thanh hoa
+s46,unsure,moving_slowly,trên vệ tinh giống khu nhà ở nhưng các điểm cam được visualize đang xếp thành con đường chứ không tụ 1 chỗ
+s47,correct,,
+s48,correct,,địa điểm được ghi nhận là khu vực sân bay. có thể đây là đợi máy bay cất cánh
+s49,correct,,các điểm sếp thành con đường.nên tôi nghĩ đây là di chuyển chậm và hình ảnh thuộc khuôn viên đại học thanh hoa
+s50,correct,,nhìn giống trường học
+s51,correct,,đây là địa điểm thuộc trung tâm mua sắm
+s52,correct,,
+s53,correct,,
+s54,wrong,moving_slowly,theo visualize thì đây là nằm trên con đường lớn. không có nhà xung quanh
+s55,correct,,giống chỗ du lịch
+s56,wrong,moving_slowly,theo nhãn thì toàn bộ khúc này đang là xe buýt
+s57,unsure,,"giống khu cư dân, nhưng các điểm giống như 1 đường di chuyển"
+s58,correct,,
+s59,correct,,
+s60,unsure,,tôi thấy khúc này gần công viên
