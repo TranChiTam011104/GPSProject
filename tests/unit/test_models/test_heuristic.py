@@ -1,7 +1,8 @@
 """Unit tests for heuristic classifier."""
-import pytest
-from src.models.heuristic import HeuristicClassifier
-from src.models.base import ClassificationResult
+from datetime import datetime
+
+from gps.models.heuristic import HeuristicClassifier
+from gps.models.base import ClassificationResult
 
 
 class TestHeuristicClassifier:
@@ -54,5 +55,4 @@ class TestHeuristicClassifier:
         """Test predict returns ClassificationResult."""
         classifier = HeuristicClassifier()
         result = classifier.predict(sample_stay_points)
-        # When implemented, this should return a ClassificationResult
-        # For now just check it doesn't crash
+        assert isinstance(result, ClassificationResult)

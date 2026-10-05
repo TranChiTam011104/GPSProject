@@ -1,6 +1,6 @@
 """Unit tests for cluster-based classifier."""
 import pytest
-from src.models.cluster import ClusterClassifier
+from gps.models.cluster import ClusterClassifier
 
 
 class TestClusterClassifier:

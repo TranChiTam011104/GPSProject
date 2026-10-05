@@ -1,6 +1,6 @@
 """Unit tests for privacy anonymizer."""
 import pytest
-from src.privacy.anonymizer import PrivacyAnonymizer
+from gps.privacy.anonymizer import PrivacyAnonymizer
 
 
 class TestPrivacyAnonymizer:

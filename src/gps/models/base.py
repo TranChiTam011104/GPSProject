@@ -40,7 +40,7 @@ class Location:
     """
 
     lat: float
-    lng: float
+    lon: float
     location_type: str  # "home" | "office" | "poi" | "unknown"
     confidence: float   # 0..1
     visit_count: int = 1
@@ -52,7 +52,7 @@ class Location:
 
     def with_geohash(self, precision: int = 6) -> "Location":
         if self.geohash is None:
-            self.geohash = geohash_encode(self.lat, self.lng, precision=precision)
+            self.geohash = geohash_encode(self.lat, self.lon, precision=precision)
         return self
 
     def to_dict(self) -> dict:
@@ -102,7 +102,7 @@ class StayPointInput:
     """
 
     lat: float
-    lng: float
+    lon: float
     arrival_time: datetime
     departure_time: datetime
     altitude_m: float = 0.0
@@ -134,7 +134,7 @@ class StayPointInput:
         ``min_duration_minutes``).
         """
         lat = _get_field(raw, "lat", "latitude")
-        lng = _get_field(raw, "lng", "lon", "longitude")
+        lon = _get_field(raw, "lon", "longitude")
         arr = _get_field(raw, "arrival_time", "start_time", required=False)
         dep = _get_field(raw, "departure_time", "end_time", required=False)
         ts = _get_field(raw, "timestamp", required=False)
@@ -154,7 +154,7 @@ class StayPointInput:
 
         return cls(
             lat=float(lat),
-            lng=float(lng),
+            lon=float(lon),
             arrival_time=_coerce_dt(arr),
             departure_time=_coerce_dt(dep),
             altitude_m=float(alt) if alt is not None else 0.0,
@@ -200,6 +200,10 @@ def coerce_stay_points(raw: Iterable) -> List[StayPointInput]:
         if isinstance(r, StayPointInput):
             out.append(r)
             continue
+        # Handle StayPoint dataclass from gps.features.stay_point
+        if hasattr(r, 'lat') and hasattr(r, 'arrival_time') and hasattr(r, 'departure_time'):
+            # It's a dataclass-like object - convert to dict
+            r = asdict(r) if hasattr(r, '__dataclass_fields__') else r
         # Pydantic v2 BaseModel — pull the fields we need.
         if hasattr(r, "model_dump"):
             r = r.model_dump()

@@ -1,0 +1,6 @@
+metric,value
+groups_kept_candidate_changed,140309.0
+moved_pick_median_m,0.7
+moved_pick_p99_m,9.7
+moved_pick_max_m,199.6
+groups_invalid_anchors,16.0

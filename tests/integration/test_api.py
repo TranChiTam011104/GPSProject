@@ -9,7 +9,7 @@ class TestAPI:
     @pytest.fixture(autouse=True)
     def setup_client(self):
         """Setup test client."""
-        from src.api.main import app
+        from gps.api.main import app
         self.client = TestClient(app)
 
     def test_health_endpoint(self):

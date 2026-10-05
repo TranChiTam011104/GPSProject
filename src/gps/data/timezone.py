@@ -1,90 +1,63 @@
-"""Timezone handling for GeoLife (Check Point 1 / Tuần 1).
+"""Giờ địa phương theo vị trí cho GeoLife.
 
-GeoLife ``.plt`` files store timestamps in **GMT**, regardless of where the
-user actually was. Most data was collected in Beijing (UTC+8), so the default
-target zone is ``Asia/Shanghai``. Callers can override via the constructor
-or :func:`detect_timezone_from_location`.
+File ``.plt`` lưu giờ **GMT** dù người dùng ở đâu. Múi giờ của mỗi điểm được tra
+từ toạ độ (``timezonefinder``: offline, đa giác ranh giới múi giờ IANA) rồi đổi
+bằng ``zoneinfo`` (có giờ mùa hè). Không dùng UTC+8 cố định: 2.61% số điểm (16
+user) ở múi giờ khác, và UTC+8 đặt 21.5% giờ hoạt động của họ vào 1–5 h sáng so
+với 7.4% khi tính theo vị trí (mốc 5.7%). Không suy từ kinh độ: Trung Quốc trải
+qua khoảng 5 múi giờ địa lý nhưng chỉ dùng 1 giờ chính thức.
+Kiểm chứng: notebooks/09_timezone_by_location.ipynb.
 """
 
 from __future__ import annotations
 
-from datetime import datetime, timezone, timedelta
-from typing import Optional
+from functools import lru_cache
 
+import numpy as np
 import pandas as pd
+from timezonefinder import TimezoneFinder
+
+# Tra múi giờ theo ô lưới 0.01° (~1 km): mỗi ô chỉ tra 1 lần.
+TZ_GRID_DECIMALS = 2
 
 
-# Beijing is the canonical target — adjust if your subset is from another region.
-DEFAULT_TARGET_TZ = timezone(timedelta(hours=8), name="Asia/Shanghai")
+@lru_cache(maxsize=1)
+def _finder() -> TimezoneFinder:
+    return TimezoneFinder()
 
 
-# ── Helpers ────────────────────────────────────────────────────────────────
+@lru_cache(maxsize=None)
+def _timezone_of_cell(lat: float, lon: float) -> str:
+    return _finder().timezone_at(lat=lat, lng=lon) or "Etc/UTC"
 
 
-def detect_timezone_from_location(lat: float, lng: float) -> str:
-    """Naive location→timezone heuristic.
-
-    Returns ``"Asia/Shanghai"`` for anything in the rough Beijing box
-    (lat 39..41, lng 116..117). Default to the same zone for unknown
-    regions because the source dataset is dominated by Beijing traces.
-    """
-    if 38 <= lat <= 42 and 115 <= lng <= 118:
-        return "Asia/Shanghai"
-    return "Asia/Shanghai"
+def timezone_names(lat, lon) -> np.ndarray:
+    """Tên múi giờ IANA (vd. ``Asia/Shanghai``) cho từng cặp toạ độ."""
+    lat = np.round(np.asarray(lat, dtype=float), TZ_GRID_DECIMALS)
+    lon = np.round(np.asarray(lon, dtype=float), TZ_GRID_DECIMALS)
+    return np.array([_timezone_of_cell(a, b) for a, b in zip(lat, lon)], dtype=object)
 
 
-def get_timezone_offset(timezone_name: str) -> timedelta:
-    """Return the UTC offset for ``timezone_name``.
-
-    GeoLife offsets are fixed (no DST) so we rely on the dataset's known
-    regions. Extend this mapping as you onboard new regions.
-    """
-    mapping = {
-        "Asia/Shanghai": timedelta(hours=8),
-        "Europe/London": timedelta(hours=0),
-        "America/Los_Angeles": timedelta(hours=-8),
-    }
-    return mapping.get(timezone_name, DEFAULT_TARGET_TZ.utcoffset(None) or timedelta(hours=8))
-
-
-def localize_dataframe_column(
+def localize_by_location(
     df: pd.DataFrame,
-    column: str = "timestamp",
+    column: str = "datetime",
     output_column: str = "timestamp_local",
+    tz_column: str = "tz_name",
 ) -> pd.DataFrame:
-    """Add a tz-aware local column to ``df`` for downstream consumers.
+    """Thêm ``tz_column`` (múi giờ của toạ độ) và ``output_column`` (giờ địa
+    phương, dạng naive vì 1 cột pandas chỉ giữ được 1 múi giờ).
 
-    Treats the naive values in ``column`` as GMT, converts to ``Asia/Shanghai``
-    (UTC+8), and stores the result in ``output_column``. The original column
-    is **kept intact** so audit / re-processing stays possible.
-
-    Idempotent: if ``column`` is already tz-aware (e.g. re-running the
-    pipeline on previously processed parquet), no localisation is attempted
-    — the values are copied straight to ``output_column``.
-
-    Args:
-        df:            Input DataFrame (not mutated; a copy is returned).
-        column:        Name of the naive GMT column (default ``"timestamp"``).
-        output_column: Name of the tz-aware column to add
-                       (default ``"timestamp_local"``).
-
-    Returns:
-        A copy of ``df`` with ``output_column`` populated.
+    ``column`` là giờ GMT naive và được giữ nguyên để kiểm tra lại. Cần cột
+    ``lat``, ``lon``. Trả về bản sao; input không bị sửa.
     """
     if df is None or df.empty or column not in df.columns:
         return df
 
     out = df.copy()
-    # Already tz-aware → copy as-is (e.g. re-running on prior parquet).
-    # Note: ``pd.api.types.is_datetime64tz_dtype`` is deprecated under pandas 4.x
-    # in favour of ``isinstance(dtype, pd.DatetimeTZDtype)``.
-    if isinstance(out[column].dtype, pd.DatetimeTZDtype):
-        out[output_column] = out[column]
-        return out
-
-    raw = pd.to_datetime(out[column], errors="coerce")
-    out[output_column] = (
-        raw.dt.tz_localize(timezone.utc, nonexistent="shift_forward", ambiguous="NaT")
-            .dt.tz_convert(DEFAULT_TARGET_TZ)
-    )
+    out[tz_column] = timezone_names(out["lat"], out["lon"])
+    utc = pd.to_datetime(out[column]).dt.tz_localize("UTC")
+    local = pd.Series(pd.NaT, index=out.index, dtype="datetime64[ns]")
+    for name, idx in out.groupby(tz_column).groups.items():
+        local.loc[idx] = utc.loc[idx].dt.tz_convert(name).dt.tz_localize(None)
+    out[output_column] = local
     return out

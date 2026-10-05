@@ -7,7 +7,7 @@ Algorithm (per Checkpoint 1 / Tuần 1):
    - ``home_hour_start..home_hour_end`` (wraps midnight) → ``"home"``
    - ``office_hour_start..office_hour_end`` on a work-day → ``"office"``
    - otherwise → ``"poi"``
-3. Aggregate buckets (using rounded lat/lng keys) to suppress GPS jitter.
+3. Aggregate buckets (using rounded lat/lon keys) to suppress GPS jitter.
 4. Pick the highest-dwell bucket per type as the winner.
 5. Confidence = share of total ``type``-dwell time captured by the winner.
 """
@@ -57,7 +57,7 @@ class HeuristicClassifier(BaseClassifier):
 
         home = self._pick_winner(sps, label="home")
         office = self._pick_winner(sps, label="office")
-        exclude_keys = {(l.lat, l.lng) for l in (home, office) if l}
+        exclude_keys = {(l.lat, l.lon) for l in (home, office) if l}
         pois = self._pick_top_pois(sps, exclude_keys)
 
         all_locs: List[Location] = []
@@ -96,7 +96,7 @@ class HeuristicClassifier(BaseClassifier):
         return "poi"
 
     def _bucket_key(self, sp):
-        return (round(sp.lat, self._bucket_decimals), round(sp.lng, self._bucket_decimals))
+        return (round(sp.lat, self._bucket_decimals), round(sp.lon, self._bucket_decimals))
 
     def _aggregate(self, sps, target_label):
         """Return list of (key, total_duration_min, visit_count, first_seen, last_seen, mean_alt)."""
@@ -137,10 +137,10 @@ class HeuristicClassifier(BaseClassifier):
             return None
         total = sum(d for _, d, *_ in scored) or 1.0
         scored.sort(key=lambda x: x[1], reverse=True)
-        (lat, lng), duration, visits, first_seen, last_seen, mean_alt = scored[0]
+        (lat, lon), duration, visits, first_seen, last_seen, mean_alt = scored[0]
         return Location(
             lat=lat,
-            lng=lng,
+            lon=lon,
             location_type=label,
             confidence=min(1.0, duration / total),
             visit_count=visits,
@@ -148,7 +148,7 @@ class HeuristicClassifier(BaseClassifier):
             altitude_m=mean_alt,
             first_seen=first_seen,
             last_seen=last_seen,
-            geohash=geohash_encode(lat, lng, precision=self.geohash_precision),
+            geohash=geohash_encode(lat, lon, precision=self.geohash_precision),
         )
 
     def _pick_top_pois(self, sps, exclude_keys) -> List[Location]:
@@ -159,10 +159,10 @@ class HeuristicClassifier(BaseClassifier):
             key = self._bucket_key(sp)
             if key in exclude_keys:
                 continue
-            gh = geohash_encode(sp.lat, sp.lng, precision=self.geohash_precision)
+            gh = geohash_encode(sp.lat, sp.lon, precision=self.geohash_precision)
             if gh not in agg:
                 agg[gh] = {
-                    "lat": sp.lat, "lng": sp.lng,
+                    "lat": sp.lat, "lon": sp.lon,
                     "duration": 0.0, "visits": 0,
                     "altitude_sum": 0.0, "altitude_n": 0,
                     "first_seen": None, "last_seen": None,
@@ -191,7 +191,7 @@ class HeuristicClassifier(BaseClassifier):
             pois.append(
                 Location(
                     lat=info["lat"],
-                    lng=info["lng"],
+                    lon=info["lon"],
                     location_type="poi",
                     confidence=min(1.0, info["duration"] / total),
                     visit_count=info["visits"],

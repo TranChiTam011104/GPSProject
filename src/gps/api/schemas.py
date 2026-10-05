@@ -6,7 +6,7 @@ trajectory directly, not just pre-computed stay-points:
 | Field          | Source in GeoLife .plt | Unit          | Notes |
 |----------------|------------------------|---------------|-------|
 | ``lat``        | col 0                  | decimal deg   | WGS84 |
-| ``lng``        | col 1                  | decimal deg   | WGS84 |
+| ``lon``        | col 1                  | decimal deg   | WGS84 |
 | ``altitude_m`` | col 3 (feet) × 0.3048  | metres        | -777 sentinel already replaced upstream |
 | ``timestamp``  | col 5+6 (``date_str``+``time_str``) | naive GMT | ISO-8601 when posted |
 | ``accuracy``   | (optional)             | metres        | horizontal GPS accuracy if known |
@@ -41,7 +41,7 @@ class StayPointInput(BaseModel):
 
     # ── Location ────────────────────────────────────────────────────────────
     lat: float = Field(..., ge=-90, le=90, description="Latitude (decimal degrees, WGS84)")
-    lng: float = Field(..., ge=-180, le=180, description="Longitude (decimal degrees, WGS84)")
+    lon: float = Field(..., ge=-180, le=180, description="Longitude (decimal degrees, WGS84)")
 
     # ── Stay-point semantics ────────────────────────────────────────────────
     arrival_time: Optional[datetime] = Field(
@@ -139,14 +139,14 @@ class ClassificationRequest(BaseModel):
                 "stay_points": [
                     {
                         "lat": 39.9847,
-                        "lng": 116.3184,
+                        "lon": 116.3184,
                         "arrival_time":   "2008-10-23T22:30:00",
                         "departure_time": "2008-10-24T06:45:00",
                         "altitude_m": 50.0,
                     },
                     {
                         "lat": 39.9847,
-                        "lng": 116.3185,
+                        "lon": 116.3185,
                         "arrival_time":   "2008-10-24T09:00:00",
                         "departure_time": "2008-10-24T18:30:00",
                         "altitude_m": 45.0,
@@ -181,7 +181,7 @@ class LocationOutput(BaseModel):
     """
 
     lat: float = Field(..., description="Latitude")
-    lng: float = Field(..., description="Longitude")
+    lon: float = Field(..., description="Longitude")
     location_type: Literal["home", "office", "poi", "unknown"] = Field(
         ...,
         description="Type of location",

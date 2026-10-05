@@ -1,0 +1,4 @@
+threshold,value,basis
+impossible_speed_kmh,1100.0,between highest verified real speed (1048.1) and lowest verified GPS-jump error (1122.7)
+ground_mode_p99_9_kmh,135.9,typical GPS drift level of ground modes (reference only; drift filter removed)
+gps_noise_margin_m,33.9,P99.9 displacement of real walking points 1 s apart (section 6.1); reference only

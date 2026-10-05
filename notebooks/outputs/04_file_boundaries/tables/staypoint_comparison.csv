@@ -1,0 +1,10 @@
+,chained,per_file
+stay_points,18598.0,12856.0
+stays_spanning_files,6193.0,0.0
+dwell_hours,79438.19222222222,22812.91555555556
+observed_share,0.11099914464597095,0.3475908676293701
+night_stays,3340.0,395.0
+users_with_night_stay,141.0,86.0
+users_without_night_stay,41.0,96.0
+stays_over_24h,14.0,4.0
+max_duration_h,43.781666666666666,30.668055555555554

@@ -100,3 +100,7 @@ logs/
 tmp/
 temp/
 *.tmp
+
+# Notebook outputs: commit figures/ and tables/ (evidence); regenerable heavy artifacts stay local
+notebooks/outputs/**/cache/
+notebooks/outputs/**/maps/

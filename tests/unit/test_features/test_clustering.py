@@ -1,6 +1,6 @@
 """Unit tests for geohash encoder."""
 import pytest
-from src.features.geohash import GeohashEncoder, calculate_k_anonymity
+from gps.features.geohash import GeohashEncoder, calculate_k_anonymity
 
 
 class TestGeohashEncoder:

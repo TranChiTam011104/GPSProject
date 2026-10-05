@@ -2,13 +2,22 @@
 
 Algorithm — sliding-window over a sorted GPS trajectory:
 
-1. Walk the trajectory by index ``i`` (anchor).
+1. Walk the trajectory by index ``i`` (anchor or centroid).
 2. Keep expanding the right end of the window while
-   - the cumulative time delta stays below ``time_threshold`` AND
-   - every point in the window is within ``distance_threshold`` of the anchor.
+   - every point in the window is within ``distance_threshold`` of the reference point.
 3. If the window covers at least ``time_threshold`` → emit one stay-point
    anchored at the centroid of the window.
 4. Resume scanning from the first point *outside* the window.
+
+A window never spans a gap of more than ``max_gap_hours`` between two consecutive
+points: the trajectory is cut there first (see ``MAX_GAP_HOURS``).
+
+Supports two distance modes:
+- "anchor": All points must be within distance_threshold of the ANCHOR (first point).
+  Standard Li et al. 2008 algorithm.
+- "centroid": All points must be within distance_threshold of the RUNNING CENTROID.
+  Centroid is recalculated after each point is added to the window.
+  More flexible for users who move around within a stay region.
 
 Returns a list of :class:`StayPoint`.
 """
@@ -17,11 +26,29 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Iterable, List
+from enum import Enum
+from math import asin, cos, radians, sin, sqrt
 
+import numpy as np
 import pandas as pd
 
-from gps.utils.geo import haversine_meters
+from gps.utils.geo import EARTH_RADIUS_KM, haversine_meters
+
+# Cắt quỹ đạo tại mọi khoảng ngắt > 18 h giữa 2 điểm liên tiếp; khoảng ngắt ngắn
+# hơn (kể cả giữa 2 file .plt) được nối qua. 18 h là mốc giờ đầu tiên mà tỉ lệ
+# "lần ghi sau bắt đầu trong vòng 200 m" chạm mức nền của khoảng ngắt > 24 h
+# (19.7% ± 1.5%), tức không còn khác thói quen quay lại chỗ quen. Số đêm có
+# stay-point tăng 395 -> 3,340 (notebooks/04_file_boundaries.ipynb).
+MAX_GAP_HOURS = 18.0
+
+
+class DistanceMode(str, Enum):
+    """Distance calculation mode for stay-point detection."""
+
+    #: Standard Li et al. 2008: all points compared to anchor (first point in window)
+    ANCHOR = "anchor"
+    #: Running centroid: all points compared to the running mean of window
+    CENTROID = "centroid"
 
 
 # ── Output value objects ─────────────────────────────────────────────────────
@@ -32,80 +59,111 @@ class StayPoint:
     """A detected stay-point."""
 
     lat: float
-    lng: float
+    lon: float
     arrival_time: datetime
     departure_time: datetime
     duration_minutes: float
     num_points: int = 1
     altitude_m: float = 0.0  # mean of the points inside the stay-point window
-    accuracy: float = 0.0    # mean GPS accuracy inside the window (if available)
-
-    @property
-    def center_lat(self) -> float:
-        return self.lat
-
-    @property
-    def center_lng(self) -> float:
-        return self.lng
-
-    @property
-    def start_time(self) -> datetime:
-        return self.arrival_time
-
-    @property
-    def end_time(self) -> datetime:
-        return self.departure_time
-
-    @property
-    def n_points(self) -> int:
-        return self.num_points
+    # Phần của duration_minutes thực sự có điểm GPS: bỏ các khoảng ngắt >
+    # unobserved_gap_seconds giữa 2 điểm liên tiếp. None nếu không tính.
+    observed_minutes: float | None = None
 
 
 # ── Detector ────────────────────────────────────────────────────────────────
 
 
 class StayPointDetector:
-    """Detect stay-points from a sorted GPS trajectory."""
+    """Detect stay-points from a sorted GPS trajectory.
+
+    Parameters
+    ----------
+    time_threshold_minutes : int, default 30
+        Minimum duration (in minutes) for a segment to qualify as a stay-point.
+        30 phút là mốc lớn nhất còn giữ được các lần dừng 30–45 phút; dưới 30
+        phút, stay-point giả trong các chuyến xe có nhãn tăng 2–30 lần
+        (notebooks/07_staypoint_thresholds.ipynb).
+    distance_threshold_meters : int, default 200
+        Maximum distance (in meters) for points to qualify as being in the same
+        stay region. 200 m bao được độ phân tán lúc đứng yên (P90 trung vị 136 m);
+        từ 200 m trở lên độ nhạy và stay-point giả cùng tăng tuyến tính, không có
+        mức tối ưu rõ ràng (notebooks/07_staypoint_thresholds.ipynb).
+    distance_mode : DistanceMode, default DistanceMode.CENTROID
+        - CENTROID: All points in window must be within distance_threshold
+          of the RUNNING CENTROID. Centroid is recalculated after each point
+          is added to the window, making it more flexible for users who
+          move around within a stay region. Các ngưỡng 200 m / 30 phút được
+          kiểm chứng ở chế độ này (notebooks 04-08).
+        - ANCHOR (Li et al. 2008): All points in window must be within
+          distance_threshold of the ANCHOR (first point in window). Cho kết
+          quả tương đương trên các chỉ số của notebook 07 (độ nhạy 50.6% so
+          với 49.3%, stay-point giả 3.52 so với 3.47 / 100 giờ đi xe).
+    unobserved_gap_seconds : float, default 1200
+        Khoảng ngắt giữa 2 điểm liên tiếp dài hơn ngưỡng này không được tính vào
+        ``observed_minutes`` (vẫn nằm trong ``duration_minutes``). Cùng ngưỡng
+        với CleaningThresholds.max_gap_seconds - nằm giữa P99.9 và P99.99 của
+        khoảng ngắt bên trong 1 chuyến đi (notebooks/03_segment_gap_threshold.ipynb).
+        Khoảng ngắt bên trong stay-point KHÔNG làm cắt stay-point
+        (notebooks/06_gaps_inside_staypoints.ipynb).
+    max_gap_hours : float or None, default MAX_GAP_HOURS (18)
+        Quỹ đạo được cắt tại mọi khoảng ngắt dài hơn ngưỡng này trước khi tìm
+        stay-point, nên có thể đưa vào toàn bộ điểm của 1 user (mọi file .plt nối
+        lại, hoặc chuỗi điểm của API). Không cắt thì gộp các lần ghi cách nhau
+        nhiều ngày/năm thành 1 stay-point; cắt tại mọi ranh giới file thì mất các
+        đêm ở nhà (tắt máy buổi tối, bật lại sáng hôm sau). ``None`` = không cắt,
+        chỉ dùng để tái hiện cách làm sai trong notebook.
+    """
 
     def __init__(
         self,
         time_threshold_minutes: int = 30,
         distance_threshold_meters: int = 200,
+        distance_mode: DistanceMode = DistanceMode.CENTROID,
+        unobserved_gap_seconds: float = 1200.0,
+        max_gap_hours: float | None = MAX_GAP_HOURS,
     ):
+        self.unobserved_gap = pd.Timedelta(seconds=unobserved_gap_seconds)
+        self.max_gap = None if max_gap_hours is None else pd.Timedelta(hours=max_gap_hours)
         self.time_threshold = pd.Timedelta(minutes=time_threshold_minutes)
-        # Legacy attribute name kept for unit-test parity.
-        self.distance_threshold = float(distance_threshold_meters)
         self.distance_threshold_m = float(distance_threshold_meters)
-        # Bytes-as-attribute (when callers treat threshold as timedelta/seconds).
-        self.time_threshold_seconds = self.time_threshold.total_seconds()
+        self.distance_mode = DistanceMode(distance_mode)
 
-    # ── Backwards-compat helpers (unit-tested) ───────────────────────────────
+    def _observed_minutes(self, timestamps: list, start_idx: int, end_idx: int) -> float:
+        """Tổng các khoảng thời gian giữa 2 điểm liên tiếp trong cửa sổ, bỏ các
+        khoảng ngắt > unobserved_gap (thiết bị không ghi)."""
+        observed = pd.Timedelta(0)
+        for k in range(start_idx, end_idx):
+            step = timestamps[k + 1] - timestamps[k]
+            if step <= self.unobserved_gap:
+                observed += step
+        return observed.total_seconds() / 60.0
 
-    def _haversine_meters(self, lat1, lng1, lat2, lng2) -> float:
-        return haversine_meters(lat1, lng1, lat2, lng2)
-
-    def _calculate_centroid(self, points):
-        if points is None or points.empty:
-            return 0.0, 0.0
-        return float(points["lat"].mean()), float(points["lng"].mean())
-
-    def detect(self, trajectory: pd.DataFrame) -> List[StayPoint]:
+    def detect(self, trajectory: pd.DataFrame) -> list[StayPoint]:
         """Run stay-point detection on a single trajectory.
 
-        Required columns: ``lat``, ``lng``, ``timestamp`` (datetime).
+        Required columns: ``lat``, ``lon``, ``timestamp`` (datetime).
         Optional column: ``altitude_m`` — averaged into each emitted
         :class:`StayPoint` if present.
+
+        The detection algorithm uses either anchor-based (Li et al. 2008) or
+        centroid-based distance calculation, controlled by ``self.distance_mode``.
         """
         if trajectory is None or trajectory.empty:
             return []
 
-        df = trajectory.sort_values("timestamp").reset_index(drop=True)
+        # Normalize column names: datetime -> timestamp (giữ lon như GeoLife gốc)
+        df = trajectory.copy()
+        if "timestamp" not in df.columns and "datetime" in df.columns:
+            df = df.rename(columns={"datetime": "timestamp"})
+
+        df = df.sort_values("timestamp").reset_index(drop=True)
         if df.empty or len(df) < 2:
             return []
 
-        timestamps = pd.to_datetime(df["timestamp"], errors="coerce").tolist()
+        ts = pd.to_datetime(df["timestamp"], errors="coerce")
+        timestamps = ts.tolist()
         lats = df["lat"].astype(float).tolist()
-        lngs = df["lng"].astype(float).tolist()
+        lons = df["lon"].astype(float).tolist()
         # Optional altitude column — mean into the emitted StayPoint when present.
         if "altitude_m" in df.columns:
             alts = pd.to_numeric(df["altitude_m"], errors="coerce").tolist()
@@ -117,56 +175,169 @@ class StayPointDetector:
         else:
             alts = [None] * len(df)
 
-        stay_points: List[StayPoint] = []
-        n = len(df)
-        i = 0
-        while i < n:
-            anchor_lat, anchor_lng = lats[i], lngs[i]
-            anchor_ts = timestamps[i]
+        # Cắt tại các khoảng ngắt > max_gap: cửa sổ không được vượt qua chúng.
+        cuts = [] if self.max_gap is None else (np.flatnonzero((ts.diff() > self.max_gap).to_numpy())).tolist()
+        edges = [0, *cuts, len(df)]
+        detect_part = (self._detect_centroid_based if self.distance_mode == DistanceMode.CENTROID
+                       else self._detect_anchor_based)
 
-            # expand window to the right while constraints hold
-            j = i + 1
-            while j < n:
-                span = timestamps[j] - anchor_ts
-                if span >= self.time_threshold:
-                    break
-                if haversine_meters(anchor_lat, anchor_lng, lats[j], lngs[j]) > self.distance_threshold_m:
-                    break
-                j += 1
-
-            # j is the first index outside the window (or == n)
-            end_idx = j - 1
-            window_span = timestamps[end_idx] - anchor_ts
-            if window_span >= self.time_threshold:
-                window_lat = lats[i : end_idx + 1]
-                window_lng = lngs[i : end_idx + 1]
-                window_alt = alts[i : end_idx + 1]
-                num_pts = end_idx - i + 1
-
-                # Centroid (arithmetic mean of lat/lng — adequate for short distances).
-                centroid_lat = float(sum(window_lat) / num_pts)
-                centroid_lng = float(sum(window_lng) / num_pts)
-
-                # Mean altitude over the window, ignoring None / NaN.
-                alt_values = [a for a in window_alt if a is not None and a == a]
-                mean_alt = float(sum(alt_values) / len(alt_values)) if alt_values else 0.0
-
-                stay_points.append(
-                    StayPoint(
-                        lat=centroid_lat,
-                        lng=centroid_lng,
-                        arrival_time=anchor_ts.to_pydatetime() if hasattr(anchor_ts, "to_pydatetime") else anchor_ts,
-                        departure_time=(timestamps[end_idx].to_pydatetime() if hasattr(timestamps[end_idx], "to_pydatetime") else timestamps[end_idx]),
-                        duration_minutes=window_span.total_seconds() / 60.0,
-                        num_points=num_pts,
-                        altitude_m=mean_alt,
-                    )
-                )
-                i = j  # resume scanning outside the window
-            else:
-                i += 1  # didn't qualify → advance one step
-
+        stay_points: list[StayPoint] = []
+        for a, b in zip(edges[:-1], edges[1:], strict=False):
+            part = (timestamps[a:b], lats[a:b], lons[a:b], alts[a:b])
+            i = 0
+            while i < b - a:
+                stay_points, i = detect_part(*part, i, stay_points)
         return stay_points
 
-    def detect_batch(self, trajectories: Iterable[pd.DataFrame]) -> List[List[StayPoint]]:
-        return [self.detect(t) for t in trajectories]
+    def _detect_anchor_based(
+        self,
+        timestamps: list,
+        lats: list[float],
+        lons: list[float],
+        alts: list,
+        start_idx: int,
+        stay_points: list[StayPoint],
+    ) -> tuple[list[StayPoint], int]:
+        """Anchor-based stay-point detection (Li et al. 2008).
+
+        All points in window must be within distance_threshold of the ANCHOR
+        (first point in window).
+        """
+        n = len(lats)
+        anchor_lat, anchor_lon = lats[start_idx], lons[start_idx]
+        anchor_ts = timestamps[start_idx]
+
+        # expand window to the right while constraints hold
+        j = start_idx + 1
+        while j < n:
+            # Chỉ break khi distance vượt - cho phép time_span >= threshold
+            # để qualify. Đây là chuẩn stay-point (Li et al. 2008).
+            if haversine_meters(anchor_lat, anchor_lon, lats[j], lons[j]) > self.distance_threshold_m:
+                break
+            j += 1
+
+        # j là index đầu tiên NGOÀI window (hoặc == n)
+        end_idx = j - 1
+        window_span = timestamps[end_idx] - anchor_ts
+
+        if window_span >= self.time_threshold:
+            stay_points = self._create_stay_point(
+                timestamps, lats, lons, alts, start_idx, end_idx, window_span, stay_points
+            )
+            return stay_points, j  # resume scanning outside the window
+        else:
+            return stay_points, start_idx + 1  # didn't qualify → advance one step
+
+    def _detect_centroid_based(
+        self,
+        timestamps: list,
+        lats: list[float],
+        lons: list[float],
+        alts: list,
+        start_idx: int,
+        stay_points: list[StayPoint],
+    ) -> tuple[list[StayPoint], int]:
+        """Centroid-based stay-point detection.
+
+        All points in window must be within distance_threshold of the RUNNING CENTROID.
+        Centroid is recalculated after each point is added to the window.
+        This is more flexible for users who move around within a stay region.
+        """
+        n = len(lats)
+
+        # Initialize window with the starting point. Tổng cộng dồn theo đúng thứ
+        # tự thêm điểm -> kết quả giống hệt sum(list), nhưng O(1) mỗi bước thay vì
+        # O(kích thước cửa sổ).
+        sum_lat = lats[start_idx]
+        sum_lon = lons[start_idx]
+        num_pts = 1
+        anchor_ts = timestamps[start_idx]
+        limit_m = self.distance_threshold_m
+
+        j = start_idx + 1
+        while j < n:
+            # Khoảng cách từ tâm hiện tại tới điểm j: đúng phép tính của
+            # haversine_meters (cùng thứ tự -> cùng kết quả), viết thẳng vào vòng
+            # lặp vì đây là chỗ tốn thời gian nhất của detector.
+            c_lat = sum_lat / num_pts
+            lat_j = lats[j]
+            lon_j = lons[j]
+            d_lat = radians(lat_j - c_lat)
+            d_lon = radians(lon_j - sum_lon / num_pts)
+            a = sin(d_lat / 2) ** 2 + cos(radians(c_lat)) * cos(radians(lat_j)) * sin(d_lon / 2) ** 2
+            dist_to_centroid = float(EARTH_RADIUS_KM * (2 * asin(sqrt(max(0.0, min(1.0, a)))))) * 1000.0
+            if dist_to_centroid > limit_m:
+                break
+
+            sum_lat += lat_j
+            sum_lon += lon_j
+            num_pts += 1
+            j += 1
+
+        # j là index đầu tiên NGOÀI window (hoặc == n)
+        end_idx = j - 1
+        window_span = timestamps[end_idx] - anchor_ts
+
+        if window_span >= self.time_threshold:
+            final_centroid_lat = sum_lat / num_pts
+            final_centroid_lon = sum_lon / num_pts
+            window_alts = [alts[start_idx]] if alts[start_idx] is not None else []
+            window_alts += [x for x in alts[start_idx + 1:end_idx + 1] if x is not None and x == x]  # bỏ NaN
+            mean_alt = float(sum(window_alts) / len(window_alts)) if window_alts else 0.0
+
+            stay_points.append(
+                StayPoint(
+                    lat=final_centroid_lat,
+                    lon=final_centroid_lon,
+                    arrival_time=anchor_ts.to_pydatetime() if hasattr(anchor_ts, "to_pydatetime") else anchor_ts,
+                    departure_time=(timestamps[end_idx].to_pydatetime() if hasattr(timestamps[end_idx], "to_pydatetime") else timestamps[end_idx]),
+                    duration_minutes=window_span.total_seconds() / 60.0,
+                    num_points=num_pts,
+                    altitude_m=mean_alt,
+                    observed_minutes=self._observed_minutes(timestamps, start_idx, end_idx),
+                )
+            )
+            return stay_points, j  # resume scanning outside the window
+        else:
+            return stay_points, start_idx + 1  # didn't qualify → advance one step
+
+    def _create_stay_point(
+        self,
+        timestamps: list,
+        lats: list[float],
+        lons: list[float],
+        alts: list,
+        start_idx: int,
+        end_idx: int,
+        window_span,
+        stay_points: list[StayPoint],
+    ) -> list[StayPoint]:
+        """Create a StayPoint from window data. Used by anchor-based detection."""
+        window_lat = lats[start_idx : end_idx + 1]
+        window_lon = lons[start_idx : end_idx + 1]
+        window_alt = alts[start_idx : end_idx + 1]
+        num_pts = end_idx - start_idx + 1
+
+        # Centroid (arithmetic mean of lat/lon — adequate for short distances).
+        centroid_lat = float(sum(window_lat) / num_pts)
+        centroid_lon = float(sum(window_lon) / num_pts)
+
+        # Mean altitude over the window, ignoring None / NaN.
+        alt_values = [a for a in window_alt if a is not None and a == a]
+        mean_alt = float(sum(alt_values) / len(alt_values)) if alt_values else 0.0
+
+        anchor_ts = timestamps[start_idx]
+
+        stay_points.append(
+            StayPoint(
+                lat=centroid_lat,
+                lon=centroid_lon,
+                arrival_time=anchor_ts.to_pydatetime() if hasattr(anchor_ts, "to_pydatetime") else anchor_ts,
+                departure_time=(timestamps[end_idx].to_pydatetime() if hasattr(timestamps[end_idx], "to_pydatetime") else timestamps[end_idx]),
+                duration_minutes=window_span.total_seconds() / 60.0,
+                num_points=num_pts,
+                altitude_m=mean_alt,
+                observed_minutes=self._observed_minutes(timestamps, start_idx, end_idx),
+            )
+        )
+        return stay_points
