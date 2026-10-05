@@ -16,12 +16,11 @@
   `GPS thô (24.88 M điểm)` → `Làm sạch (24.18 M)` → `Stay-point (18,597)` → `Classifier v1 + API`
 - Trạng thái: làm sạch và stay-point đã xong và đã kiểm chứng; API nhận stay-point; classifier đang được sửa.
 
-## Slide 2 – Điều học được nhiều nhất: tìm bằng chứng cho từng quyết định (~1.5 phút)
-**Tiêu đề:** Từ "dùng lại xử lý có sẵn" sang "chứng minh bằng dữ liệu"
+## Slide 2 – Tìm bằng chứng cho từng quyết định (~1.5 phút)
+**Tiêu đề:** Mỗi ngưỡng đều được chứng minh bằng dữ liệu
 
-- Xuất phát điểm: là lập trình viên, quen dùng lại các bước xử lý và ngưỡng có sẵn trong bài báo hoặc code mẫu.
 - Ví dụ mở đầu: bộ lọc tốc độ **180 km/h** có sẵn trong prototype trông hợp lý. Đo trên dữ liệu có nhãn thì nó **xoá 57% số điểm đi máy bay và 3.6% số điểm đi tàu**, tức là dữ liệu thật bị xoá. Đã bỏ.
-- Cách làm mới: mỗi quyết định có một notebook, trả lời một câu hỏi, có số liệu và giới hạn.
+- Cách làm: mỗi quyết định có một notebook, trả lời một câu hỏi, có số liệu và giới hạn.
 
 | Quyết định | Bằng chứng (dữ liệu thật) | Kết quả |
 |---|---|---|
