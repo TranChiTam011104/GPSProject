@@ -46,3 +46,13 @@ class TestLocalizeByLocation:
     def test_missing_column_returns_input(self):
         df = _df([BEIJING], ["2008-10-23 02:53:04"])
         assert localize_by_location(df, column="nope") is df
+
+
+def test_local_times_per_location():
+    from datetime import datetime
+
+    from gps.data.timezone import local_times
+    gmt = [datetime(2008, 7, 2, 6, 0), datetime(2008, 7, 2, 6, 0)]
+    beijing, seattle = local_times(gmt, [39.98, 47.61], [116.31, -122.33])
+    assert beijing == datetime(2008, 7, 2, 14, 0)
+    assert seattle == datetime(2008, 7, 1, 23, 0)

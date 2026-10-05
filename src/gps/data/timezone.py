@@ -11,7 +11,9 @@ Kiểm chứng: notebooks/09_timezone_by_location.ipynb.
 
 from __future__ import annotations
 
-from functools import lru_cache
+from datetime import datetime, timezone
+from functools import cache, lru_cache
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
@@ -26,7 +28,7 @@ def _finder() -> TimezoneFinder:
     return TimezoneFinder()
 
 
-@lru_cache(maxsize=None)
+@cache
 def _timezone_of_cell(lat: float, lon: float) -> str:
     return _finder().timezone_at(lat=lat, lng=lon) or "Etc/UTC"
 
@@ -35,7 +37,15 @@ def timezone_names(lat, lon) -> np.ndarray:
     """Tên múi giờ IANA (vd. ``Asia/Shanghai``) cho từng cặp toạ độ."""
     lat = np.round(np.asarray(lat, dtype=float), TZ_GRID_DECIMALS)
     lon = np.round(np.asarray(lon, dtype=float), TZ_GRID_DECIMALS)
-    return np.array([_timezone_of_cell(a, b) for a, b in zip(lat, lon)], dtype=object)
+    return np.array([_timezone_of_cell(a, b) for a, b in zip(lat, lon, strict=False)], dtype=object)
+
+
+def local_times(times, lat, lon) -> list[datetime]:
+    """Giờ địa phương (naive) của từng thời điểm GMT naive, theo múi giờ của toạ độ
+    tương ứng - cùng quy tắc với ``localize_by_location`` nhưng cho danh sách
+    ``datetime`` (classifier), không cần DataFrame."""
+    return [t.replace(tzinfo=timezone.utc).astimezone(ZoneInfo(name)).replace(tzinfo=None)
+            for t, name in zip(times, timezone_names(lat, lon), strict=True)]
 
 
 def localize_by_location(

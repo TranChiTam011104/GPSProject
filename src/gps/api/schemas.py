@@ -1,158 +1,87 @@
 """Pydantic schemas for API request/response validation.
 
-These schemas mirror the GeoLife ``.plt`` row schema so callers can submit a
-trajectory directly, not just pre-computed stay-points:
+The classify endpoint takes **stay-points**, in the same shape the pipeline writes to
+``data/processed/staypoints/user_{id}.parquet`` (``gps.features.stay_point.stay_points_to_frame``).
+Raw GPS points are not accepted: stay-point detection runs in the pipeline, where its
+thresholds are validated (notebooks 04-10).
 
-| Field          | Source in GeoLife .plt | Unit          | Notes |
-|----------------|------------------------|---------------|-------|
-| ``lat``        | col 0                  | decimal deg   | WGS84 |
-| ``lon``        | col 1                  | decimal deg   | WGS84 |
-| ``altitude_m`` | col 3 (feet) × 0.3048  | metres        | -777 sentinel already replaced upstream |
-| ``timestamp``  | col 5+6 (``date_str``+``time_str``) | naive GMT | ISO-8601 when posted |
-| ``accuracy``   | (optional)             | metres        | horizontal GPS accuracy if known |
-| ``user_id``    | directory name         | string        | optional per-row override |
-
-The classifier only consumes ``arrival_time``/``departure_time`` (i.e. the
-already-aggregated stay-point), so ``lat``/``lng`` are kept for reference
-and to enable future trajectory-level scoring.
+| Field              | Pipeline column    | Unit        | Notes |
+|--------------------|--------------------|-------------|-------|
+| ``lat`` / ``lon``  | ``lat`` / ``lon``  | decimal deg | WGS84, stay centroid |
+| ``arrival_time``   | ``arrival``        | naive GMT   | tz-aware input is converted to GMT |
+| ``departure_time`` | ``departure``      | naive GMT   | must be after ``arrival_time`` |
+| ``observed_minutes`` | ``observed_minutes`` | minutes | optional; time actually covered by GPS points |
+| ``altitude_m``     | ``altitude_m``     | metres      | optional |
 """
-from pydantic import BaseModel, Field, field_validator
-from typing import List, Optional, Literal
-from datetime import datetime
+from datetime import datetime, timezone
+from typing import Literal
+
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+
+def _to_naive_gmt(value: datetime) -> datetime:
+    """GeoLife and the pipeline use naive GMT; convert tz-aware input to that."""
+    if value.tzinfo is not None:
+        return value.astimezone(timezone.utc).replace(tzinfo=None)
+    return value
 
 
 class StayPointInput(BaseModel):
-    """Input schema for a single stay-point (pre-aggregated) **or** a single
-    raw GPS observation.
+    """One stay-point: where the user stayed, from when to when."""
 
-    Required for *stay-points*:
+    lat: float = Field(..., ge=-90, le=90, description="Latitude of the stay centroid (decimal degrees, WGS84)")
+    lon: float = Field(..., ge=-180, le=180, description="Longitude of the stay centroid (decimal degrees, WGS84)")
+    arrival_time: datetime = Field(
+        ..., description="Arrival (ISO-8601). Naive values are GMT, as in GeoLife; tz-aware values are converted to GMT.")
+    departure_time: datetime = Field(..., description="Departure (ISO-8601), after arrival_time. Same time convention.")
+    observed_minutes: float | None = Field(
+        default=None, ge=0,
+        description="Minutes of the stay actually covered by GPS points (gaps > 20 min excluded); "
+                    "at most departure - arrival.")
+    altitude_m: float | None = Field(default=None, description="Mean altitude in metres (optional).")
 
-    - ``arrival_time``  — when the user arrived at this location
-    - ``departure_time`` — when they left (``arrival_time < departure_time``)
-
-    Required for *raw GPS observations* (alternative use):
-
-    - ``timestamp`` — naive GMT, parsed from GeoLife ``.plt`` date_str+time_str
-
-    Either ``arrival_time`` **or** ``timestamp`` must be supplied; if both are
-    present, ``timestamp`` is ignored by the classifier (the stay-point
-    variant wins).
-    """
-
-    # ── Location ────────────────────────────────────────────────────────────
-    lat: float = Field(..., ge=-90, le=90, description="Latitude (decimal degrees, WGS84)")
-    lon: float = Field(..., ge=-180, le=180, description="Longitude (decimal degrees, WGS84)")
-
-    # ── Stay-point semantics ────────────────────────────────────────────────
-    arrival_time: Optional[datetime] = Field(
-        default=None,
-        description="When the user arrived at this location (ISO-8601, naive or tz-aware). "
-                    "GeoLife timestamps are naive GMT; cloud devices (OwnTracks, Google "
-                    "Takeout) post tz-aware. Required when posting an aggregated stay-point.",
-    )
-    departure_time: Optional[datetime] = Field(
-        default=None,
-        description="When the user left (ISO-8601, naive or tz-aware). Must be > arrival_time.",
-    )
-    duration_minutes: Optional[float] = Field(
-        default=None,
-        ge=0,
-        description="Pre-computed dwell time in minutes (auto-calculated when arrival+departure set)",
-    )
-
-    # ── Raw GPS observation fields (optional) ───────────────────────────────
-    timestamp: Optional[datetime] = Field(
-        default=None,
-        description="Raw timestamp (naive GMT) — only used when posting a single GPS "
-                    "observation. Equivalent to arrival_time when both are absent.",
-    )
-    altitude_m: Optional[float] = Field(
-        default=None,
-        description="Altitude in metres (GeoLife raw is in feet: × 0.3048 upstream).",
-    )
-    accuracy: Optional[float] = Field(
-        default=None,
-        ge=0,
-        description="Horizontal GPS accuracy in metres (optional).",
-    )
-    user_id: Optional[str] = Field(
-        default=None,
-        description="Per-row override of the user_id from the URL path (optional).",
-    )
-
-    # ── Validators ──────────────────────────────────────────────────────────
-
-    @field_validator("departure_time")
+    @field_validator("arrival_time", "departure_time")
     @classmethod
-    def departure_after_arrival(cls, v, info):
-        if v is None:
-            return v
-        arr = info.data.get("arrival_time")
-        if arr is not None and v <= arr:
+    def as_naive_gmt(cls, v: datetime) -> datetime:
+        return _to_naive_gmt(v)
+
+    @model_validator(mode="after")
+    def check_times(self) -> "StayPointInput":
+        if self.departure_time <= self.arrival_time:
             raise ValueError("departure_time must be after arrival_time")
-        return v
-
-    @field_validator("duration_minutes")
-    @classmethod
-    def calculate_duration(cls, v, info):
-        if v is not None:
-            return v
-        arr = info.data.get("arrival_time")
-        dep = info.data.get("departure_time")
-        if arr is not None and dep is not None:
-            return (dep - arr).total_seconds() / 60.0
-        return None
-
-    @field_validator("arrival_time")
-    @classmethod
-    def fill_arrival_from_timestamp(cls, v, info):
-        """If only ``timestamp`` is supplied, treat it as ``arrival_time``."""
-        if v is None:
-            ts = info.data.get("timestamp")
-            if ts is not None:
-                # ``timestamp`` is the only time signal — alias it.
-                return ts
-        return v
+        duration = (self.departure_time - self.arrival_time).total_seconds() / 60
+        if self.observed_minutes is not None and self.observed_minutes > duration + 1e-6:
+            raise ValueError("observed_minutes cannot exceed departure_time - arrival_time")
+        return self
 
 
 class ClassificationRequest(BaseModel):
-    """Request schema for classification endpoint."""
-    user_id: Optional[str] = Field(
-        default=None,
-        description="Optional global user_id for all stay-points in this request. "
-                    "Per-row ``user_id`` stays take precedence.",
-    )
-    stay_points: List[StayPointInput] = Field(
+    """Request schema for the classification endpoint (the user id is in the URL)."""
+    stay_points: list[StayPointInput] = Field(
         ...,
         min_length=1,
-        description="List of stay-points from GPS trajectory",
-    )
-    include_geohash: bool = Field(
-        default=True,
-        description="Include geohash encoding in response",
+        description="The user's stay-points, e.g. rows of data/processed/staypoints/user_{id}.parquet",
     )
 
     model_config = {
         "json_schema_extra": {
             "example": {
-                "user_id": "010",
                 "stay_points": [
                     {
                         "lat": 39.9847,
                         "lon": 116.3184,
-                        "arrival_time":   "2008-10-23T22:30:00",
-                        "departure_time": "2008-10-24T06:45:00",
+                        "arrival_time":   "2008-10-23T14:30:00",
+                        "departure_time": "2008-10-23T22:45:00",
+                        "observed_minutes": 480.0,
                         "altitude_m": 50.0,
                     },
                     {
-                        "lat": 39.9847,
-                        "lon": 116.3185,
-                        "arrival_time":   "2008-10-24T09:00:00",
-                        "departure_time": "2008-10-24T18:30:00",
-                        "altitude_m": 45.0,
+                        "lat": 40.0043,
+                        "lon": 116.3263,
+                        "arrival_time":   "2008-10-24T01:00:00",
+                        "departure_time": "2008-10-24T10:30:00",
                     },
                 ],
-                "include_geohash": True,
             }
         }
     }
@@ -206,20 +135,20 @@ class LocationOutput(BaseModel):
         ge=0,
         description="Total dwell time across all visits (minutes)"
     )
-    altitude_m: Optional[float] = Field(
+    altitude_m: float | None = Field(
         default=None,
         description="Mean altitude (metres) over the visits to this location; "
                     "null means altitude was not provided in the input.",
     )
-    first_seen: Optional[datetime] = Field(
+    first_seen: datetime | None = Field(
         default=None,
         description="First visit timestamp (naive GMT)"
     )
-    last_seen: Optional[datetime] = Field(
+    last_seen: datetime | None = Field(
         default=None,
         description="Most recent visit timestamp (naive GMT)"
     )
-    geohash: Optional[str] = Field(
+    geohash: str | None = Field(
         default=None,
         description="Geohash encoding for privacy"
     )
@@ -228,19 +157,19 @@ class LocationOutput(BaseModel):
 class ClassificationResponse(BaseModel):
     """Response schema for classification endpoint."""
     user_id: str = Field(..., description="User identifier")
-    locations: List[LocationOutput] = Field(
+    locations: list[LocationOutput] = Field(
         ...,
         description="All detected locations"
     )
-    home: Optional[LocationOutput] = Field(
+    home: LocationOutput | None = Field(
         default=None,
         description="Inferred home location"
     )
-    office: Optional[LocationOutput] = Field(
+    office: LocationOutput | None = Field(
         default=None,
         description="Inferred office location"
     )
-    pois: List[LocationOutput] = Field(
+    pois: list[LocationOutput] = Field(
         default_factory=list,
         description="Points of Interest"
     )
@@ -261,7 +190,7 @@ class HealthResponse(BaseModel):
 class ErrorResponse(BaseModel):
     """Response schema for errors."""
     detail: str = Field(..., description="Error message")
-    error_code: Optional[str] = Field(default=None, description="Error code")
+    error_code: str | None = Field(default=None, description="Error code")
     timestamp: datetime = Field(
         default_factory=datetime.now,
         description="Error timestamp"
@@ -270,7 +199,7 @@ class ErrorResponse(BaseModel):
 
 class BatchClassificationRequest(BaseModel):
     """Request schema for batch classification."""
-    users: List[ClassificationRequest] = Field(
+    users: list[ClassificationRequest] = Field(
         ...,
         min_length=1,
         max_length=100,
@@ -280,7 +209,7 @@ class BatchClassificationRequest(BaseModel):
 
 class BatchClassificationResponse(BaseModel):
     """Response schema for batch classification."""
-    results: List[ClassificationResponse] = Field(
+    results: list[ClassificationResponse] = Field(
         ...,
         description="Classification results"
     )

@@ -3,7 +3,9 @@
 Algorithm (per Checkpoint 1 / Tuần 1):
 
 1. Drop stay-points shorter than ``min_duration_minutes``.
-2. Classify each stay-point by local hour:
+2. Classify each stay-point by the local hour of its arrival. Times arrive as naive
+   GMT (GeoLife convention); local time comes from the time zone of the stay's
+   location, as in the pipeline (notebooks/09_timezone_by_location.ipynb).
    - ``home_hour_start..home_hour_end`` (wraps midnight) → ``"home"``
    - ``office_hour_start..office_hour_end`` on a work-day → ``"office"``
    - otherwise → ``"poi"``
@@ -15,11 +17,12 @@ Algorithm (per Checkpoint 1 / Tuần 1):
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Iterable
 from datetime import datetime
-from typing import Iterable, List, Optional
 
 from geohash2 import encode as geohash_encode
 
+from gps.data.timezone import local_times
 from gps.models.base import (
     BaseClassifier,
     ClassificationResult,
@@ -33,7 +36,7 @@ class HeuristicClassifier(BaseClassifier):
 
     model_version = "v1-heuristic"
 
-    def __init__(self, config: Optional[dict] = None):
+    def __init__(self, config: dict | None = None):
         super().__init__(config)
         # ── Exposed attributes for unit tests (and runtime tuning) ──────────
         self.home_hour_start: int = int(self.config.get("home_hour_start", 22))
@@ -54,13 +57,16 @@ class HeuristicClassifier(BaseClassifier):
     def predict(self, stay_points: Iterable[dict]) -> ClassificationResult:
         sps = [sp for sp in coerce_stay_points(stay_points)
                if sp.duration_minutes >= self.min_duration_minutes]
+        # Nhãn tính một lần mỗi request, không lưu vào self: API dùng chung 1 classifier.
+        arrivals = local_times([sp.arrival_time for sp in sps], [sp.lat for sp in sps], [sp.lon for sp in sps])
+        labelled = [(sp, self._label(local)) for sp, local in zip(sps, arrivals, strict=True)]
 
-        home = self._pick_winner(sps, label="home")
-        office = self._pick_winner(sps, label="office")
-        exclude_keys = {(l.lat, l.lon) for l in (home, office) if l}
-        pois = self._pick_top_pois(sps, exclude_keys)
+        home = self._pick_winner(labelled, label="home")
+        office = self._pick_winner(labelled, label="office")
+        exclude_keys = {(loc.lat, loc.lon) for loc in (home, office) if loc}
+        pois = self._pick_top_pois(labelled, exclude_keys)
 
-        all_locs: List[Location] = []
+        all_locs: list[Location] = []
         if home:
             all_locs.append(home)
         if office:
@@ -88,24 +94,24 @@ class HeuristicClassifier(BaseClassifier):
 
     # ── Internals ────────────────────────────────────────────────────────────
 
-    def _classify(self, sp) -> str:
-        if self._is_home_time(sp.arrival_time):
+    def _label(self, local_arrival: datetime) -> str:
+        if self._is_home_time(local_arrival):
             return "home"
-        if self._is_office_time(sp.arrival_time):
+        if self._is_office_time(local_arrival):
             return "office"
         return "poi"
 
     def _bucket_key(self, sp):
         return (round(sp.lat, self._bucket_decimals), round(sp.lon, self._bucket_decimals))
 
-    def _aggregate(self, sps, target_label):
+    def _aggregate(self, labelled, target_label):
         """Return list of (key, total_duration_min, visit_count, first_seen, last_seen, mean_alt)."""
         agg: dict[tuple[float, float], dict] = defaultdict(lambda: {
             "duration": 0.0, "visits": 0,
             "first_seen": None, "last_seen": None, "altitude_sum": 0.0, "altitude_n": 0,
         })
-        for sp in sps:
-            if self._classify(sp) != target_label:
+        for sp, label in labelled:
+            if label != target_label:
                 continue
             key = self._bucket_key(sp)
             entry = agg[key]
@@ -131,8 +137,8 @@ class HeuristicClassifier(BaseClassifier):
             for k, v in agg.items()
         ]
 
-    def _pick_winner(self, sps, label: str) -> Optional[Location]:
-        scored = self._aggregate(sps, label)
+    def _pick_winner(self, labelled, label: str) -> Location | None:
+        scored = self._aggregate(labelled, label)
         if not scored:
             return None
         total = sum(d for _, d, *_ in scored) or 1.0
@@ -151,10 +157,10 @@ class HeuristicClassifier(BaseClassifier):
             geohash=geohash_encode(lat, lon, precision=self.geohash_precision),
         )
 
-    def _pick_top_pois(self, sps, exclude_keys) -> List[Location]:
+    def _pick_top_pois(self, labelled, exclude_keys) -> list[Location]:
         agg: dict[str, dict] = {}
-        for sp in sps:
-            if self._classify(sp) != "poi":
+        for sp, label in labelled:
+            if label != "poi":
                 continue
             key = self._bucket_key(sp)
             if key in exclude_keys:
@@ -183,7 +189,7 @@ class HeuristicClassifier(BaseClassifier):
         if not scored:
             return []
         total = sum(v["duration"] for _, v in scored) or 1.0
-        pois: List[Location] = []
+        pois: list[Location] = []
         for gh, info in scored[: self.top_poi_n]:
             mean_alt = (
                 info["altitude_sum"] / info["altitude_n"] if info["altitude_n"] else 0.0
