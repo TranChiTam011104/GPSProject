@@ -1,0 +1,10 @@
+mutation,target_property,stays_checked,caught_by_target,caught_by_any
+centroid moved 1 m,centroid_is_mean,886,886,886
+num_points + 1,num_points_match,886,886,886
+arrival 1 s earlier,bounds_are_points,886,733,886
+observed + 1 min,observed_ok,886,886,886
+duration + 1 min,duration_ok,886,886,886
+one row duplicated,no_overlap,887,1,1
+detector radius 300 m,running_centroid_ok,1017,1010,1010
+detector radius 150 m,window_is_maximal,753,646,646
+no cut at gaps > 18 h,no_gap_over_max,42,42,42

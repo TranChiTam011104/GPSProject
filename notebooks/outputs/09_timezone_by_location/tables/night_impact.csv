@@ -1,0 +1,9 @@
+,chained,per_file
+stay_points,18598,12856
+affected_stays,468,408
+night_fixed_utc8,3340,395
+night_by_location,3344,378
+night_changed,74,37
+users_night_changed,8,7
+users_without_night_fixed,41,96
+users_without_night_by_location,40,96

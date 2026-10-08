@@ -1,0 +1,9 @@
+metric,value
+affected_points_pct,2.61
+users_with_affected_points,16.0
+users_mostly_affected,2.0
+files_spanning_offsets,23.0
+tvd_fixed_utc8,0.239
+tvd_by_location,0.097
+night_changed_chained,74.0
+night_changed_per_file,37.0

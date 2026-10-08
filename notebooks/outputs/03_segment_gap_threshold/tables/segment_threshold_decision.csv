@@ -1,0 +1,6 @@
+metric,value,basis
+within_trip_gap_p99_9_s,252.0,P99.9 of gaps inside one labelled trip (same file)
+within_trip_gap_p99_99_s,2170.0,P99.99 of gaps inside one labelled trip (same file)
+max_gap_seconds,1200.0,chosen: inside the P99.9-P99.99 range
+trip_boundaries_gap_le_5s_pct,55.4,share of real trip boundaries no gap threshold can detect
+gaps_20_30min_pct,0.0148,share of within-file gaps between 1200 and 1800 s

@@ -1,0 +1,10 @@
+,checked,violations
+bounds_are_points,18597,0
+num_points_match,18597,0
+centroid_is_mean,18597,0
+duration_ok,18597,0
+observed_ok,18597,0
+no_gap_over_max,18597,0
+running_centroid_ok,18597,0
+window_is_maximal,18597,0
+no_overlap,18597,0

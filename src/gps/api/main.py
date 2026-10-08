@@ -174,7 +174,7 @@ def register_routes(app: FastAPI) -> None:
                 d = loc.to_dict()
                 # Re-derive geohash lazily if it wasn't set by the classifier.
                 if d.get("geohash") is None:
-                    d["geohash"] = geohash_encode(d["lat"], d["lng"], precision=6)
+                    d["geohash"] = geohash_encode(d["lat"], d["lon"], precision=6)
                 # Drop zero-valued metadata that callers didn't supply so the
                 # output reads cleanly (e.g. altitude_m=0.0 -> omitted).
                 if d.get("altitude_m") in (0, 0.0, None):

@@ -39,7 +39,7 @@ def haversine_meters(lat1: float, lng1: float, lat2: float, lng2: float) -> floa
 # ── Distance / Speed (vectorized over a DataFrame) ───────────────────────────
 
 
-def haversine_vector_km(df: pd.DataFrame, lat_col: str = "lat", lng_col: str = "lng") -> np.ndarray:
+def haversine_vector_km(df: pd.DataFrame, lat_col: str = "lat", lon_col: str = "lon") -> np.ndarray:
     """Distance in km between each row and its predecessor.
 
     First row returns ``np.nan`` (no predecessor).
@@ -51,11 +51,11 @@ def haversine_vector_km(df: pd.DataFrame, lat_col: str = "lat", lng_col: str = "
     lat1 = np.radians(df[lat_col].to_numpy(dtype=float))
     lat2 = np.radians(df[lat_col].shift(1).to_numpy(dtype=float))
     dlat = lat1 - lat2
-    dlng = np.radians(df[lng_col].to_numpy(dtype=float)) - np.radians(
-        df[lng_col].shift(1).to_numpy(dtype=float)
+    dlon = np.radians(df[lon_col].to_numpy(dtype=float)) - np.radians(
+        df[lon_col].shift(1).to_numpy(dtype=float)
     )
 
-    a = np.sin(dlat / 2.0) ** 2 + np.cos(lat2) * np.cos(lat1) * np.sin(dlng / 2.0) ** 2
+    a = np.sin(dlat / 2.0) ** 2 + np.cos(lat2) * np.cos(lat1) * np.sin(dlon / 2.0) ** 2
     a = np.where(np.isnan(a), 0.0, a)
     a = np.clip(a, 0.0, 1.0)
     c = 2.0 * np.arcsin(np.sqrt(a))
@@ -65,10 +65,10 @@ def haversine_vector_km(df: pd.DataFrame, lat_col: str = "lat", lng_col: str = "
 
 
 def haversine_vector_meters(
-    df: pd.DataFrame, lat_col: str = "lat", lng_col: str = "lng"
+    df: pd.DataFrame, lat_col: str = "lat", lon_col: str = "lon"
 ) -> np.ndarray:
     """Same as :func:`haversine_vector_km` but in meters."""
-    return haversine_vector_km(df, lat_col, lng_col) * 1000.0
+    return haversine_vector_km(df, lat_col, lon_col) * 1000.0
 
 
 def speed_kmh(df: pd.DataFrame, distance_km_col: str = "distance_km", time_col: str = "delta_time_s") -> np.ndarray:
@@ -88,8 +88,8 @@ def speed_kmh(df: pd.DataFrame, distance_km_col: str = "distance_km", time_col: 
 # ── Centroid (single & batch) ────────────────────────────────────────────────
 
 
-def centroid_lat_lng(points: pd.DataFrame) -> tuple[float, float]:
-    """Plain arithmetic mean of lat/lng — adequate for short distances (<10 km)."""
+def centroid_lat_lon(points: pd.DataFrame) -> tuple[float, float]:
+    """Plain arithmetic mean of lat/lon — adequate for short distances (<10 km)."""
     if points is None or points.empty:
         return 0.0, 0.0
-    return float(points["lat"].mean()), float(points["lng"].mean())
+    return float(points["lat"].mean()), float(points["lon"].mean())

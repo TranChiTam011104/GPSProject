@@ -1,0 +1,14 @@
+metric,value
+dup_times_cross_file,0.0
+groups_total,157865.0
+groups_tie_break,157807.0
+groups_single_valid,42.0
+groups_no_valid,16.0
+tie_break_median_dist_m,1.4
+tie_break_p99_dist_m,14.0
+groups_over_200m,110.0
+tie_break_over_200m,52.0
+median_dt_to_nearest_anchor_s,15.0
+far_tie_break_rules_disagree,27.0
+groups_with_suspect_anchor,19.0
+groups_ambiguous_option_A,48.0

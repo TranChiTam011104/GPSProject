@@ -18,21 +18,21 @@ def sample_stay_points():
     return [
         {
             "lat": 39.9847,
-            "lng": 116.3184,
+            "lon": 116.3184,
             "arrival_time": base_time,
             "departure_time": base_time + timedelta(hours=8),
             "duration_minutes": 480
         },
         {
             "lat": 40.1234,
-            "lng": 116.5678,
+            "lon": 116.5678,
             "arrival_time": base_time + timedelta(hours=9),
             "departure_time": base_time + timedelta(hours=18),
             "duration_minutes": 540
         },
         {
             "lat": 39.9847,
-            "lng": 116.3185,
+            "lon": 116.3185,
             "arrival_time": base_time + timedelta(days=1),
             "departure_time": base_time + timedelta(days=1, hours=8),
             "duration_minutes": 480
@@ -47,7 +47,7 @@ def sample_trajectory():
     
     data = {
         "lat": [39.9847, 39.9848, 39.9850, 39.9855, 39.9860],
-        "lng": [116.3184, 116.3185, 116.3190, 116.3195, 116.3200],
+        "lon": [116.3184, 116.3185, 116.3190, 116.3195, 116.3200],
         "timestamp": [
             base_time + timedelta(minutes=i*5)
             for i in range(5)

@@ -9,7 +9,7 @@ class H3Cell:
     """Represents an H3 hex cell."""
     cell_id: str
     lat: float
-    lng: float
+    lon: float
     resolution: int
     
     @property
@@ -32,12 +32,12 @@ class H3Encoder:
         """
         self.resolution = resolution
     
-    def encode(self, lat: float, lng: float) -> str:
-        """Encode lat/lng to H3 cell ID."""
-        return h3.latlng_to_cell(lat, lng, self.resolution)
+    def encode(self, lat: float, lon: float) -> str:
+        """Encode lat/lon to H3 cell ID."""
+        return h3.latlng_to_cell(lat, lon, self.resolution)
     
     def decode(self, cell_id: str) -> Tuple[float, float]:
-        """Decode H3 cell ID to lat/lng."""
+        """Decode H3 cell ID to lat/lon."""
         return h3.cell_to_latlng(cell_id)
     
     def get_neighbors(self, cell_id: str, k: int = 1) -> List[str]:

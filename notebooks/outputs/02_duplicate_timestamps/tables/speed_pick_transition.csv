@@ -1,0 +1,6 @@
+decision_old,ambiguous,invalid_anchors,single_valid,tie_break,All
+ambiguous,48,0,0,0,48
+no_valid,0,16,0,0,16
+single_valid,0,0,42,0,42
+tie_break,0,0,0,157759,157759
+All,48,16,42,157759,157865

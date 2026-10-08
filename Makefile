@@ -79,7 +79,7 @@ clean:
 
 ## run: Run the API locally
 run:
-	PYTHONPATH=$(PYTHONPATH) $(PYTHON) -m uvicorn src.api.main:app --reload --host 0.0.0.0 --port 8000
+	PYTHONPATH=$(PYTHONPATH) $(PYTHON) -m uvicorn gps.api.main:app --reload --host 0.0.0.0 --port 8000
 
 ## docker-build: Build Docker image
 docker-build:
@@ -112,4 +112,4 @@ mlflow:
 ## migrate-v1-v2: Migrate model from v1 to v2
 migrate-v1-v2:
 	@echo "Running migration from heuristic (v1) to DBSCAN (v2)..."
-	PYTHONPATH=$(PYTHONPATH) $(PYTHON) -c "from src.ml.registry import ModelRegistry; r = ModelRegistry(); r.migrate_version('v1', 'v2')"
+	PYTHONPATH=$(PYTHONPATH) $(PYTHON) -c "from gps.ml.registry import ModelRegistry; r = ModelRegistry(); r.migrate_version('v1', 'v2')"

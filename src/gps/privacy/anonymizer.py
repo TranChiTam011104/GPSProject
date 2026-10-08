@@ -40,35 +40,35 @@ class PrivacyAnonymizer:
         self.precision = precision
         self.k_threshold = k_threshold
 
-    def encode(self, lat: float, lng: float) -> str:
+    def encode(self, lat: float, lon: float) -> str:
         """
         Encode location as geohash.
         
         Args:
             lat: Latitude
-            lng: Longitude
+            lon: Longitude
             
         Returns:
             Geohash string
         """
-        return geohash.encode(lat, lng, precision=self.precision)
+        return geohash.encode(lat, lon, precision=self.precision)
 
     def anonymize_location(
         self, 
         lat: float, 
-        lng: float
+        lon: float
     ) -> AnonymizedLocation:
         """
         Anonymize a single location.
         
         Args:
             lat: Latitude
-            lng: Longitude
+            lon: Longitude
             
         Returns:
             AnonymizedLocation object
         """
-        geohash_str = self.encode(lat, lng)
+        geohash_str = self.encode(lat, lon)
         
         return AnonymizedLocation(
             geohash=geohash_str,
@@ -101,8 +101,8 @@ class PrivacyAnonymizer:
         results = []
         seen = set()
         
-        for lat, lng in locations:
-            gh = self.encode(lat, lng)
+        for lat, lon in locations:
+            gh = self.encode(lat, lon)
             
             if gh not in seen:
                 results.append(AnonymizedLocation(
@@ -157,8 +157,8 @@ class PrivacyAnonymizer:
             from collections import Counter
             gh_counts = Counter()
             
-            for lat, lng in locations:
-                gh = geohash.encode(lat, lng, precision=precision)
+            for lat, lon in locations:
+                gh = geohash.encode(lat, lon, precision=precision)
                 gh_counts[gh] += 1
             
             min_count = min(gh_counts.values()) if gh_counts else 0
@@ -174,7 +174,7 @@ class PrivacyAnonymizer:
     def add_differential_privacy_noise(
         self, 
         lat: float, 
-        lng: float, 
+        lon: float, 
         epsilon: float = 1.0
     ) -> Tuple[float, float]:
         """
@@ -182,11 +182,11 @@ class PrivacyAnonymizer:
         
         Args:
             lat: Latitude
-            lng: Longitude
+            lon: Longitude
             epsilon: Privacy parameter (lower = more private)
             
         Returns:
-            Tuple of (noisy_lat, noisy_lng)
+            Tuple of (noisy_lat, noisy_lon)
         """
         import numpy as np
         
@@ -195,16 +195,16 @@ class PrivacyAnonymizer:
         scale = 0.01 / epsilon  # degrees
         
         noise_lat = np.random.laplace(0, scale)
-        noise_lng = np.random.laplace(0, scale)
+        noise_lon = np.random.laplace(0, scale)
         
         noisy_lat = lat + noise_lat
-        noisy_lng = lng + noise_lng
+        noisy_lon = lon + noise_lon
         
         # Clamp to valid ranges
         noisy_lat = max(-90, min(90, noisy_lat))
-        noisy_lng = max(-180, min(180, noisy_lng))
+        noisy_lon = max(-180, min(180, noisy_lon))
         
-        return noisy_lat, noisy_lng
+        return noisy_lat, noisy_lon
 
     @staticmethod
     def hash_identifier(user_id: str, salt: str = "") -> str:

@@ -1,0 +1,3 @@
+user_id,main_tz,stay_points,night_fixed_utc8,night_by_location,median_arrival_hour_fixed,median_arrival_hour_by_location
+160,Asia/Phnom_Penh,18,2,1,10.0,17.5
+172,Asia/Shanghai,22,0,1,13.5,13.5

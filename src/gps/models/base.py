@@ -6,13 +6,13 @@ same shape so :mod:`gps.api.dependencies` can pick the right one by name.
 
 from __future__ import annotations
 
+import math
 from abc import ABC, abstractmethod
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field
-from datetime import datetime
-from typing import Iterable, List, Optional
+from datetime import datetime, timezone
 
 from geohash2 import encode as geohash_encode
-
 
 # ── Output value objects ─────────────────────────────────────────────────────
 
@@ -40,19 +40,19 @@ class Location:
     """
 
     lat: float
-    lng: float
+    lon: float
     location_type: str  # "home" | "office" | "poi" | "unknown"
     confidence: float   # 0..1
     visit_count: int = 1
     duration_minutes: float = 0.0
     altitude_m: float = 0.0
-    first_seen: Optional[datetime] = None
-    last_seen: Optional[datetime] = None
-    geohash: Optional[str] = None
+    first_seen: datetime | None = None
+    last_seen: datetime | None = None
+    geohash: str | None = None
 
-    def with_geohash(self, precision: int = 6) -> "Location":
+    def with_geohash(self, precision: int = 6) -> Location:
         if self.geohash is None:
-            self.geohash = geohash_encode(self.lat, self.lng, precision=precision)
+            self.geohash = geohash_encode(self.lat, self.lon, precision=precision)
         return self
 
     def to_dict(self) -> dict:
@@ -64,10 +64,10 @@ class ClassificationResult:
     """Result of classifying one user."""
 
     user_id: str
-    locations: List[Location] = field(default_factory=list)
-    home: Optional[Location] = None
-    office: Optional[Location] = None
-    pois: List[Location] = field(default_factory=list)
+    locations: list[Location] = field(default_factory=list)
+    home: Location | None = None
+    office: Location | None = None
+    pois: list[Location] = field(default_factory=list)
     model_version: str = "unknown"
     processed_at: datetime = field(default_factory=datetime.now)
 
@@ -90,85 +90,61 @@ class ClassificationResult:
 class StayPointInput:
     """Normalised stay-point consumed by classifiers.
 
-    Mirrors the Pydantic :class:`gps.api.schemas.StayPointInput` but lives here
-    so the model layer does not depend on FastAPI.
-
-    Fields are optional except ``lat``/``lng``/``arrival_time``/``departure_time``
-    so the same shape can carry either:
-
-    - an aggregated stay-point (caller already computed the dwell window), or
-    - a single raw GPS observation (only ``timestamp`` is set; we alias it to
-      ``arrival_time`` in :meth:`from_dict`).
+    Same fields as the API's :class:`gps.api.schemas.StayPointInput`, but lives here
+    so the model layer does not depend on FastAPI. Times are naive GMT.
     """
 
     lat: float
-    lng: float
+    lon: float
     arrival_time: datetime
     departure_time: datetime
-    altitude_m: float = 0.0
-    accuracy: float = 0.0
-    user_id: Optional[str] = None
+    observed_minutes: float | None = None
+    altitude_m: float | None = None
 
     @property
     def duration_minutes(self) -> float:
         return (self.departure_time - self.arrival_time).total_seconds() / 60.0
 
     @classmethod
-    def from_dict(cls, raw: dict) -> "StayPointInput":
-        """Best-effort coercion from the FastAPI request shape.
+    def from_dict(cls, raw) -> StayPointInput:
+        """Build from a dict or an object with matching attributes.
 
-        Accepts dicts, Pydantic v1/v2 models, and arbitrary objects with
-        matching attribute names. Aliases:
-
-        - ``lat`` / ``latitude``
-        - ``lng`` / ``lon`` / ``longitude``
-        - ``arrival_time`` / ``start_time``
-        - ``departure_time`` / ``end_time``
-        - ``altitude_m`` / ``altitude`` (raw feet; call :func:`clean_altitude` upstream)
-        - ``accuracy`` (optional)
-        - ``user_id`` (optional)
-
-        If only ``timestamp`` is supplied (raw GPS row), it is aliased to
-        ``arrival_time`` and ``departure_time`` is set to the same instant
-        (zero-duration stay-point — downstream filters with
-        ``min_duration_minutes``).
+        Reads both the API names (``arrival_time`` / ``departure_time``) and the
+        pipeline's column names (``arrival`` / ``departure``), so rows of
+        ``data/processed/staypoints/user_{id}.parquet`` can be passed directly.
+        Raises ``ValueError`` when a time is missing or departure is not after arrival.
         """
-        lat = _get_field(raw, "lat", "latitude")
-        lng = _get_field(raw, "lng", "lon", "longitude")
-        arr = _get_field(raw, "arrival_time", "start_time", required=False)
-        dep = _get_field(raw, "departure_time", "end_time", required=False)
-        ts = _get_field(raw, "timestamp", required=False)
-
-        # Raw observation fallback: alias `timestamp` to both arrival and departure.
-        if arr is None and ts is not None:
-            arr = ts
-            dep = ts
-        if arr is None or dep is None:
-            raise ValueError(
-                "StayPointInput needs either arrival_time/departure_time or timestamp"
-            )
-
-        alt = _get_field(raw, "altitude_m", "altitude", required=False, default=0.0)
-        accuracy = _get_field(raw, "accuracy", required=False, default=0.0)
-        user_id = _get_field(raw, "user_id", required=False, default=None)
-
+        arrival = _coerce_dt(_get_field(raw, "arrival_time", "arrival"))
+        departure = _coerce_dt(_get_field(raw, "departure_time", "departure"))
+        if departure <= arrival:
+            raise ValueError("departure_time must be after arrival_time")
         return cls(
-            lat=float(lat),
-            lng=float(lng),
-            arrival_time=_coerce_dt(arr),
-            departure_time=_coerce_dt(dep),
-            altitude_m=float(alt) if alt is not None else 0.0,
-            accuracy=float(accuracy) if accuracy is not None else 0.0,
-            user_id=user_id,
+            lat=float(_get_field(raw, "lat")),
+            lon=float(_get_field(raw, "lon")),
+            arrival_time=arrival,
+            departure_time=departure,
+            observed_minutes=_optional_float(_get_field(raw, "observed_minutes", required=False)),
+            altitude_m=_optional_float(_get_field(raw, "altitude_m", required=False)),
         )
 
 
 def _coerce_dt(value) -> datetime:
-    if isinstance(value, datetime):
-        return value
+    """datetime / pandas Timestamp / ISO string -> naive GMT datetime."""
     if isinstance(value, str):
-        return datetime.fromisoformat(value)
-    raise TypeError(f"Cannot coerce {value!r} to datetime")
+        value = datetime.fromisoformat(value)
+    if not isinstance(value, datetime):
+        raise TypeError(f"Cannot coerce {value!r} to datetime")
+    if value.tzinfo is not None:
+        value = value.astimezone(timezone.utc).replace(tzinfo=None)
+    return value
+
+
+def _optional_float(value) -> float | None:
+    """None and NaN (missing in the pipeline's parquet) both mean "not given"."""
+    if value is None:
+        return None
+    value = float(value)
+    return None if math.isnan(value) else value
 
 
 def _get_field(obj, *keys, required=True, default=None):
@@ -188,25 +164,18 @@ def _get_field(obj, *keys, required=True, default=None):
     return default
 
 
-def coerce_stay_points(raw: Iterable) -> List[StayPointInput]:
-    """Accept dicts, ``StayPointInput`` objects, or Pydantic v2 models.
-
-    FastAPI routes pass Pydantic models, notebooks pass dicts, unit tests pass
-    both. The coercion normalises to ``StayPointInput`` so the rest of the
-    classifier only needs to handle that one type.
-    """
-    out: List[StayPointInput] = []
+def coerce_stay_points(raw: Iterable) -> list[StayPointInput]:
+    """Normalise API models, pipeline rows (dicts) and ``StayPoint`` objects from
+    :mod:`gps.features.stay_point` to :class:`StayPointInput`."""
+    out: list[StayPointInput] = []
     for r in raw:
         if isinstance(r, StayPointInput):
             out.append(r)
-            continue
-        # Pydantic v2 BaseModel — pull the fields we need.
-        if hasattr(r, "model_dump"):
-            r = r.model_dump()
-        # Pydantic v1 (legacy).
-        elif hasattr(r, "dict") and callable(r.dict):
-            r = r.dict()
-        if isinstance(r, dict):
+        elif hasattr(r, "model_dump"):                    # Pydantic (API request)
+            out.append(StayPointInput.from_dict(r.model_dump()))
+        elif hasattr(r, "__dataclass_fields__"):          # gps.features.stay_point.StayPoint
+            out.append(StayPointInput.from_dict(asdict(r)))
+        elif isinstance(r, dict):
             out.append(StayPointInput.from_dict(r))
         else:
             raise TypeError(f"Cannot coerce stay-point entry of type {type(r)}")
@@ -221,7 +190,7 @@ class BaseClassifier(ABC):
 
     model_version: str = "base"
 
-    def __init__(self, config: Optional[dict] = None):
+    def __init__(self, config: dict | None = None):
         self.config = config or {}
 
     @abstractmethod

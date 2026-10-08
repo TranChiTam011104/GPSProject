@@ -81,30 +81,35 @@ Content-Type: application/json
   "stay_points": [
     {
       "lat": 39.9847,
-      "lng": 116.3184,
-      "arrival_time":   "2008-10-23T22:30:00",
-      "departure_time": "2008-10-24T06:30:00"
+      "lon": 116.3184,
+      "arrival_time":   "2008-10-23T14:30:00",
+      "departure_time": "2008-10-23T22:30:00",
+      "observed_minutes": 412.5
     },
     {
       "lat": 40.1234,
-      "lng": 116.5678,
-      "arrival_time":   "2008-10-24T09:15:00",
-      "departure_time": "2008-10-24T18:15:00"
+      "lon": 116.5678,
+      "arrival_time":   "2008-10-24T01:15:00",
+      "departure_time": "2008-10-24T10:15:00"
     }
-  ],
-  "include_geohash": true
+  ]
 }
 ```
+
+The endpoint takes **stay-points only**, in the shape the pipeline writes to
+`data/processed/staypoints/user_{id}.parquet` (columns `arrival` / `departure` there).
+Raw GPS points are not accepted: stay-point detection runs in the pipeline, where its
+thresholds are validated.
 
 | Field | Type | Required | Notes |
 |---|---|---|---|
 | `stay_points` | array | ✓ | ≥ 1 item |
-| `stay_points[].lat` | float [-90, 90] | ✓ | Decimal degrees, WGS84 |
-| `stay_points[].lng` | float [-180, 180] | ✓ | Decimal degrees, WGS84 |
-| `stay_points[].arrival_time`   | ISO-8601 datetime | ✓ | Naive (GMT) — server converts to Asia/Shanghai before any hour-of-day rule |
+| `stay_points[].lat` | float [-90, 90] | ✓ | Stay centroid, decimal degrees, WGS84 |
+| `stay_points[].lon` | float [-180, 180] | ✓ | Stay centroid, decimal degrees, WGS84 |
+| `stay_points[].arrival_time`   | ISO-8601 datetime | ✓ | Naive = GMT (GeoLife convention); tz-aware values are converted to GMT |
 | `stay_points[].departure_time` | ISO-8601 datetime | ✓ | Must be > `arrival_time` |
-| `stay_points[].altitude_m` | float | ✗ | Optional, currently unused |
-| `include_geohash` | bool | ✗ | Default `true` — echoes geohash-6 per location |
+| `stay_points[].observed_minutes` | float ≥ 0 | ✗ | Minutes actually covered by GPS points; ≤ departure − arrival |
+| `stay_points[].altitude_m` | float | ✗ | Mean altitude, metres |
 
 #### Response — 200 OK
 
@@ -114,7 +119,7 @@ Content-Type: application/json
   "locations": [
     {
       "lat": 39.9847,
-      "lng": 116.3184,
+      "lon": 116.3184,
       "location_type": "home",
       "confidence": 1.0,
       "visit_count": 2,
@@ -123,7 +128,7 @@ Content-Type: application/json
     },
     {
       "lat": 40.1234,
-      "lng": 116.5678,
+      "lon": 116.5678,
       "location_type": "office",
       "confidence": 0.857,
       "visit_count": 1,
@@ -131,8 +136,8 @@ Content-Type: application/json
       "geohash": "wx4uk8"
     }
   ],
-  "home":   { "lat": 39.9847, "lng": 116.3184, "location_type": "home",   "confidence": 1.0,   "visit_count": 2, "duration_minutes": 960.0, "geohash": "wx4eqy" },
-  "office": { "lat": 40.1234, "lng": 116.5678, "location_type": "office", "confidence": 0.857, "visit_count": 1, "duration_minutes": 540.0, "geohash": "wx4uk8" },
+  "home":   { "lat": 39.9847, "lon": 116.3184, "location_type": "home",   "confidence": 1.0,   "visit_count": 2, "duration_minutes": 960.0, "geohash": "wx4eqy" },
+  "office": { "lat": 40.1234, "lon": 116.5678, "location_type": "office", "confidence": 0.857, "visit_count": 1, "duration_minutes": 540.0, "geohash": "wx4uk8" },
   "pois":   [],
   "model_version": "v1-heuristic",
   "processed_at": "2026-09-22T10:30:00Z"
@@ -143,7 +148,7 @@ Content-Type: application/json
 
 | Status | Meaning | Example body |
 |---|---|---|
-| **400** | Invalid request — bad coords / non-monotonic timestamps / unknown field | `{"detail": "departure_time must be after arrival_time"}` |
+| **422** | Invalid request — empty list, missing time, raw GPS point, departure not after arrival, `observed_minutes` > duration | FastAPI validation body naming the field, e.g. `departure_time must be after arrival_time` |
 | **404** | Reserved for future "user not found" once we onboard persistent storage | `{"detail": "User user_xxx not found"}` |
 | **500** | Classifier raised an unexpected exception | `{"detail": "Classification failed"}` (full traceback logged server-side) |
 
@@ -180,7 +185,7 @@ confidence(winner) = winner_dwell_minutes / total_dwell_minutes_of_type
 
 Where:
 
-- `winner`           — the single (lat, lng) bucket that captured the most
+- `winner`           — the single (lat, lon) bucket that captured the most
                         total dwell minutes (and visits) for this location
                         type.
 - `total_dwell_minutes_of_type` — sum of dwell minutes across **all** of
@@ -212,10 +217,10 @@ candidate wins each type — not as an absolute probability.
 ## Timezone handling
 
 The server treats `arrival_time` / `departure_time` as **naive GMT** (the
-GeoLife convention). Before applying any hour-of-day rule it converts to
-**Asia/Shanghai (UTC+8)** via :mod:`gps.data.timezone`. If your data is from
-another region, change `TimezoneConverter.__init__` or expose the offset as
-a config flag (Checkpoint 2 work).
+GeoLife convention) and converts tz-aware input to GMT. Before any hour-of-day rule,
+the classifier converts the arrival to **local time at the stay's location** (IANA time
+zone looked up from the coordinates, daylight saving included), the same rule the
+pipeline uses for `arrival_local`. Output timestamps (`first_seen`, `last_seen`) stay in GMT.
 
 ---
 

@@ -1,7 +1,7 @@
 """Unit tests for GPS data loader."""
 import pytest
 from pathlib import Path
-from src.data.loader import GeoLifeLoader
+from gps.data.loader import GeoLifeLoader
 
 
 class TestGeoLifeLoader:

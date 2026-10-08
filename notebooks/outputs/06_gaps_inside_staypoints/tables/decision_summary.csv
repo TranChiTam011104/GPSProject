@@ -1,0 +1,11 @@
+metric,value
+trip_inside_gap_pct_20m-1h,0.16
+trip_inside_gap_pct_1-2h,0.24
+trip_inside_gap_pct_2-3h,0.73
+trip_inside_gap_pct_3-6h,1.87
+trip_inside_gap_pct_>6h,0.0
+dwell_time_left_pct_cut_20min,27.9
+dwell_time_left_pct_cut_60min,44.7
+dwell_time_left_pct_cut_120min,60.5
+dwell_time_left_pct_cut_180min,73.2
+dwell_time_left_pct_cut_360min,98.1

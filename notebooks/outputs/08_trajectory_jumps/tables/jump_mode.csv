@@ -1,0 +1,11 @@
+mode_at_jump,excursion,one_sided
+airplane,0,1
+bike,0,4
+bus,0,7
+car,0,5
+no_labels,14,155
+subway,0,3
+taxi,0,1
+train,2,3
+unlabelled_time,42,60
+walk,0,11

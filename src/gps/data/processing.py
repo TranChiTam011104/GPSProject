@@ -1,24 +1,38 @@
 """
 GeoLife GPS Data Processing Pipeline.
 =====================================
-Production-grade module chuyển từ notebooks/02_cleaning_geolife.ipynb.
+Căn cứ cho từng quyết định: notebooks/README.md (bản prototype ban đầu:
+notebooks/archive/02_cleaning_geolife.ipynb).
 
-REFACTOR v2 (2026-09-21) - Chống tràn RAM 97% & quá nhiệt CPU 95°C:
-  - Xử lý tuần tự theo từng User: duyệt user -> ProcessPoolExecutor nội bộ user
-    -> ghi parquet -> gc.collect() -> sang user tiếp theo
-  - n_workers = min(4, os.cpu_count()) thay vì cpu_count() - 1
-  - match_labels dùng pd.merge_asof vectorized thay vì iterrows()
+Một pipeline làm sạch DUY NHẤT; dữ liệu sạch là đầu vào của stay-point
+detection và classifier. Mọi ngưỡng đều có căn cứ trong notebook (ghi cạnh
+từng ngưỡng ở CleaningThresholds).
 
-Pipeline steps (đã kiểm chứng trong notebook):
-  1. Filter physical bounds   - lat in [-90,90], lon in [-180,180], ~(0,0)
-  2. Deduplicate timestamps   - giữ bản ghi đầu tiên
-  3. Clean altitude           - -777 -> NaN -> feet*0.3048 -> mét -> linear interpolate
-  4. Compute kinematics       - Haversine vectorized -> delta_time_s, speed_kmh
-  5. Filter GPS drift         - bỏ điểm có speed > 180 km/h
-  6. Segment trajectories     - sub_trip_id khi dt > 1200 s (20 phút)
-  7. Merge transport labels   - khớp [start, end] interval với labels.txt
+Chống tràn RAM & quá nhiệt CPU: xử lý tuần tự theo từng User (ProcessPoolExecutor
+nội bộ user -> ghi parquet -> gc.collect() -> sang user tiếp theo),
+n_workers = min(4, os.cpu_count()).
+
+Các bước (cho từng file .plt):
+  1. Load .plt
+  2. Filter physical bounds   - lat in [-90,90], lon in [-180,180], ~(0,0)
+  3. Resolve duplicate timestamps - trùng cả toạ độ: giữ 1; khác toạ độ: giữ
+                                ứng viên hợp lý về tốc độ với điểm trước/sau;
+                                không có ứng viên hợp lý, hoặc các ứng viên hợp
+                                lý cách nhau > 200 m -> quarantine cả nhóm
+  4. Remove speed spikes      - bỏ điểm nhảy ra rồi quay lại (> 1100 km/h)
+  5. Clean altitude           - -777 -> NaN -> feet*0.3048 -> mét -> linear interpolate
+  6. Segment trajectories     - sub_trip_id mới khi dt > 1200 s (20 phút)
+                                hoặc bước nhảy > 1100 km/h (giữ điểm, ngắt nối)
+  7. Localize timezone        - GMT -> giờ địa phương theo toạ độ (cột tz_name, timestamp_local)
+
+Sau đó, cho từng user: stay-point trên mọi điểm sạch của user (StayPointDetector
+mặc định: 200 m / 30 phút, cắt tại khoảng ngắt > 18 h; notebooks 04-10).
 
 Output: Partitioned Apache Parquet -> data/processed/users/user_{user_id}.parquet
+        Điểm bị loại ở bước 3-4 -> data/processed/quarantine/user_{user_id}.csv
+        Stay-point              -> data/processed/staypoints/user_{user_id}.parquet
+                                   (schema STAY_POINT_COLUMNS; file rỗng nếu user
+                                   không có stay-point nào)
 """
 
 from __future__ import annotations
@@ -28,7 +42,6 @@ import gc
 import logging
 import os
 import sys
-import warnings
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime
@@ -36,7 +49,6 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from tqdm import tqdm
 
 # Logging
 logging.basicConfig(
@@ -49,26 +61,37 @@ log = logging.getLogger("processing")
 
 @dataclass
 class CleaningThresholds:
-    """Các ngưỡng thuật toán đã kiểm chứng trong 02_cleaning_geolife.ipynb."""
+    """Ngưỡng của pipeline làm sạch - căn cứ ghi cạnh từng ngưỡng."""
 
-    # 1. Physical bounds
+    # 1. Physical bounds (định nghĩa toạ độ hợp lệ)
     lat_min: float = -90.0
     lat_max: float = 90.0
     lon_min: float = -180.0
     lon_max: float = 180.0
 
-    # 2. Altitude sentinel
+    # 2. Altitude sentinel (theo đặc tả GeoLife)
     altitude_invalid: int = -777
     altitude_to_meters: float = 0.3048  # feet -> mét
 
-    # 3. Speed filter (GPS drift / multipath)
-    max_speed_kmh: float = 180.0
+    # 3. Cắt segment khi khoảng ngắt > 20 phút. Căn cứ: nằm giữa P99.9 và
+    #    P99.99 của khoảng ngắt bên trong 1 chuyến đi
+    #    (P99.9 = 252 s, P99.99 = 2,170 s; notebooks/03_segment_gap_threshold.ipynb).
+    max_gap_seconds: float = 1200.0
 
-    # 4. Trajectory segmentation (time gap threshold)
-    max_gap_seconds: float = 1200.0  # 20 phút
-
-    # 5. Minimum points per file to keep
+    # 4. Minimum points per file to keep (cần >= 2 điểm để có quỹ đạo)
     min_points: int = 2
+
+    # 5. Tốc độ "vật lý bất khả thi" - dùng để giải quyết trùng timestamp và
+    #    loại điểm gai. Căn cứ: notebooks/01_speed_threshold.ipynb -
+    #    tốc độ thật cao nhất 1,048 km/h (máy bay), lỗi thấp nhất 1,122.7 km/h
+    #    (GPS nhảy điểm).
+    impossible_speed_kmh: float = 1100.0
+
+    # 6. Nhóm trùng timestamp còn >= 2 ứng viên hợp lệ nhưng cách nhau quá bán
+    #    kính stay-point (200 m) -> chọn ứng viên nào sẽ làm đổi
+    #    stay-point mà dữ liệu không đủ để chọn: 2 quy tắc chọn hợp lý bất đồng
+    #    ở 27/52 nhóm (notebooks/02_duplicate_timestamps.ipynb) -> quarantine.
+    ambiguous_duplicate_spread_m: float = 200.0
 
 
 DEFAULT_THRESHOLDS = CleaningThresholds()
@@ -80,12 +103,21 @@ COL_LON = "lon"
 COL_DATETIME = "datetime"
 COL_ALTITUDE_RAW = "altitude"       # feet, gốc từ .plt
 COL_ALTITUDE_M = "altitude_m"      # mét, đã xử lý
-COL_DELTA_TIME_S = "delta_time_s"
-COL_SPEED_KMH = "speed_kmh"
+COL_TIMESTAMP_LOCAL = "timestamp_local"
+COL_TZ_NAME = "tz_name"
 COL_SUB_TRIP_ID = "sub_trip_id"
-COL_MODE = "mode"
 COL_USER_ID = "user_id"
 COL_SOURCE_FILE = "source_file"
+COL_REASON = "reason"
+
+QUARANTINE_COLS = [
+    COL_USER_ID, COL_SOURCE_FILE, COL_DATETIME, COL_LAT, COL_LON, COL_ALTITUDE_RAW, COL_REASON,
+]
+REASON_DUPLICATE = "duplicate_no_valid_candidate"
+REASON_DUPLICATE_INVALID_ANCHORS = "duplicate_invalid_anchors"
+REASON_DUPLICATE_AMBIGUOUS = "duplicate_ambiguous_candidates"
+REASON_DUPLICATE_REJECTED = "duplicate_rejected_candidate"
+REASON_SPIKE = "speed_spike"
 
 
 # Stage 1 - Load raw .plt file
@@ -146,14 +178,232 @@ def filter_physical_bounds(
     ].copy()
 
 
-# Stage 3 - Deduplicate timestamps
-def deduplicate_timestamps(df: pd.DataFrame) -> pd.DataFrame:
+# Stage 3 - Resolve duplicate timestamps
+def _speed_kmh(
+    lat1: np.ndarray, lon1: np.ndarray, t1: np.ndarray,
+    lat2: np.ndarray, lon2: np.ndarray, t2: np.ndarray,
+) -> np.ndarray:
+    """Tốc độ (km/h) giữa từng cặp điểm; t1/t2 là mảng datetime64."""
+    dist_m = _haversine_vectorized(lat1, lon1, lat2, lon2)
+    dt_s = (t2 - t1) / np.timedelta64(1, "s")
+    return dist_m / dt_s * 3.6
+
+
+def _as_quarantine(rows: pd.DataFrame, reason: str) -> pd.DataFrame:
+    """Chuẩn hoá các dòng bị loại về schema QUARANTINE_COLS."""
+    return rows.assign(**{COL_REASON: reason}).reindex(columns=QUARANTINE_COLS)
+
+
+def _valid_spread_m(cands: pd.DataFrame) -> pd.Series:
+    """Khoảng cách lớn nhất (m) giữa 2 ứng viên HỢP LỆ bất kỳ trong mỗi nhóm,
+    index = mốc thời gian của nhóm. Nhóm < 2 ứng viên hợp lệ không có mặt."""
+    v = cands.loc[cands["valid"], ["row", COL_DATETIME, COL_LAT, COL_LON]]
+    pairs = v.merge(v, on=COL_DATETIME, suffixes=("_a", "_b"))
+    pairs = pairs[pairs["row_a"] < pairs["row_b"]]
+    dist = _haversine_vectorized(
+        pairs[f"{COL_LAT}_a"].to_numpy(), pairs[f"{COL_LON}_a"].to_numpy(),
+        pairs[f"{COL_LAT}_b"].to_numpy(), pairs[f"{COL_LON}_b"].to_numpy(),
+    )
+    return pd.Series(dist, index=pairs[COL_DATETIME].to_numpy()).groupby(level=0).max()
+
+
+def _resolve_duplicate_groups(
+    df: pd.DataFrame,
+    thresholds: CleaningThresholds = DEFAULT_THRESHOLDS,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """
-    Xóa các bản ghi trùng mốc thời gian, giữ bản ghi ĐẦU TIÊN.
+    Giải quyết các nhóm bản ghi trùng mốc thời gian. Kiểm chứng:
+    notebooks/02_duplicate_timestamps.ipynb (trùng chỉ xảy ra trong 1 file nên xử
+    lý theo từng file là đủ).
+
+    - Trùng cả thời gian lẫn toạ độ: giữ 1 bản.
+    - Khác toạ độ: mỗi ứng viên được so với "điểm neo" - điểm KHÔNG trùng gần
+      nhất trước và sau nó. Ứng viên hợp lệ khi tốc độ tới cả 2 điểm neo đều
+      <= impossible_speed_kmh (thiếu 1 phía thì phía đó không tính là bằng
+      chứng chống lại). Quyết định mỗi nhóm:
+        + "invalid_anchors": chính 2 điểm neo cách nhau > impossible_speed_kmh
+                           -> không ứng viên nào hợp lệ được (bất đẳng thức tam
+                           giác), quarantine cả nhóm với lý do riêng
+        + "no_valid"     : 0 ứng viên hợp lệ -> quarantine cả nhóm
+        + "ambiguous"    : >= 2 ứng viên hợp lệ cách nhau > ambiguous_duplicate_spread_m
+                           -> quarantine cả nhóm (dữ liệu không đủ để chọn)
+        + "single_valid" : đúng 1 ứng viên hợp lệ -> giữ ứng viên đó
+        + "tie_break"    : >= 2 ứng viên hợp lệ ở gần nhau -> giữ ứng viên có
+                           max(v_in, v_out) nhỏ nhất (khớp chuyển động nhất);
+                           hoà thì altitude hợp lệ trước, rồi thứ tự trong file
+      Chọn theo tốc độ thay vì theo quy ước để bỏ tính ngẫu nhiên; điểm được chọn
+      đổi trung vị < 1 m nên stay-point không đổi. Ngưỡng riêng theo phương tiện
+      không dùng vì loại nhầm 1.2–2.3% điểm thật (notebooks/01_speed_threshold.ipynb
+      mục 6; notebooks/02_duplicate_timestamps.ipynb phần 3).
+      Ở 2 nhánh giữ được ứng viên, các ứng viên bị loại vì tốc độ được đưa vào
+      quarantine (REASON_DUPLICATE_REJECTED) để soát lại; ứng viên hợp lệ không
+      được chọn (cách ứng viên được giữ <= spread) thì bỏ.
+
+    Returns:
+        (kept, quarantined, decisions) - decisions có 1 dòng / nhóm khác toạ độ
+        với n_candidates, n_valid, valid_spread_m, decision.
+    """
+    t = thresholds
+    work = df.assign(
+        _order=np.arange(len(df)),
+        _alt_invalid=(df[COL_ALTITUDE_RAW] == t.altitude_invalid).to_numpy(),
+    )
+    work = (
+        work.sort_values([COL_DATETIME, "_alt_invalid", "_order"], kind="stable")
+        .drop_duplicates(subset=[COL_DATETIME, COL_LAT, COL_LON], keep="first")
+        .drop(columns=["_order", "_alt_invalid"])
+        .reset_index(drop=True)
+    )
+
+    is_dup = work.duplicated(subset=[COL_DATETIME], keep=False).to_numpy()
+    no_decisions = pd.DataFrame(
+        columns=[COL_DATETIME, "n_candidates", "n_valid", "valid_spread_m", "decision"]
+    )
+    if not is_dup.any():
+        return work, _concat_quarantine([]), no_decisions
+
+    ts = work[COL_DATETIME].to_numpy(dtype="datetime64[ns]")
+    lat = work[COL_LAT].to_numpy(dtype=float)
+    lon = work[COL_LON].to_numpy(dtype=float)
+
+    anchor_idx = np.flatnonzero(~is_dup)
+    cand_idx = np.flatnonzero(is_dup)
+    # Mốc thời gian của anchor và ứng viên không bao giờ trùng nhau
+    # -> pos = số anchor đứng trước ứng viên.
+    pos = np.searchsorted(ts[anchor_idx], ts[cand_idx])
+
+    v_in = np.full(len(cand_idx), np.nan)
+    v_out = np.full(len(cand_idx), np.nan)
+    v_anchors = np.full(len(cand_idx), np.nan)
+    has_prev = pos > 0
+    has_next = pos < len(anchor_idx)
+    if has_prev.any():
+        p, c = anchor_idx[pos[has_prev] - 1], cand_idx[has_prev]
+        v_in[has_prev] = _speed_kmh(lat[p], lon[p], ts[p], lat[c], lon[c], ts[c])
+    if has_next.any():
+        c, n = cand_idx[has_next], anchor_idx[pos[has_next]]
+        v_out[has_next] = _speed_kmh(lat[c], lon[c], ts[c], lat[n], lon[n], ts[n])
+    both = has_prev & has_next
+    if both.any():
+        p, n = anchor_idx[pos[both] - 1], anchor_idx[pos[both]]
+        v_anchors[both] = _speed_kmh(lat[p], lon[p], ts[p], lat[n], lon[n], ts[n])
+    valid = ~(v_in > t.impossible_speed_kmh) & ~(v_out > t.impossible_speed_kmh)
+
+    cands = pd.DataFrame({
+        "row": cand_idx, COL_DATETIME: ts[cand_idx], "valid": valid,
+        COL_LAT: lat[cand_idx], COL_LON: lon[cand_idx],
+        # thiếu cả 2 phía -> không có bằng chứng tốc độ -> 0 (chỉ còn thứ tự ưu tiên)
+        "score": np.fmax(v_in, v_out),
+        "invalid_anchors": v_anchors > t.impossible_speed_kmh,
+    })
+    cands["score"] = cands["score"].fillna(0.0)
+    decisions = cands.groupby(COL_DATETIME, sort=False).agg(
+        n_candidates=("row", "size"), n_valid=("valid", "sum"),
+        invalid_anchors=("invalid_anchors", "first"),
+    ).reset_index()
+    decisions["valid_spread_m"] = decisions[COL_DATETIME].map(_valid_spread_m(cands)).fillna(0.0)
+    decisions["decision"] = np.select(
+        [
+            decisions["invalid_anchors"],
+            decisions["n_valid"] == 0,
+            decisions["n_valid"] == 1,
+            decisions["valid_spread_m"] > t.ambiguous_duplicate_spread_m,
+        ],
+        ["invalid_anchors", "no_valid", "single_valid", "ambiguous"],
+        default="tie_break",
+    )
+    decisions = decisions.drop(columns="invalid_anchors")
+
+    def rows_of(decision_names: list[str], valid_only: bool | None = None) -> np.ndarray:
+        times = decisions.loc[decisions["decision"].isin(decision_names), COL_DATETIME]
+        mask = cands[COL_DATETIME].isin(times)
+        if valid_only is not None:
+            mask &= cands["valid"] == valid_only
+        return cands.loc[mask, "row"].to_numpy()
+
+    resolved = ["single_valid", "tie_break"]
+    # tốc độ nhỏ nhất trước; hoà thì row nhỏ nhất = ưu tiên cao nhất (work đã sort
+    # theo altitude hợp lệ, rồi thứ tự trong file)
+    keep_rows = (
+        cands[cands["row"].isin(rows_of(resolved, valid_only=True))]
+        .sort_values(["score", "row"])
+        .groupby(COL_DATETIME)["row"].first().to_numpy()
+    )
+    quarantined = _concat_quarantine([
+        _as_quarantine(work.loc[rows_of(["invalid_anchors"])], REASON_DUPLICATE_INVALID_ANCHORS),
+        _as_quarantine(work.loc[rows_of(["no_valid"])], REASON_DUPLICATE),
+        _as_quarantine(work.loc[rows_of(["ambiguous"])], REASON_DUPLICATE_AMBIGUOUS),
+        _as_quarantine(work.loc[rows_of(resolved, valid_only=False)], REASON_DUPLICATE_REJECTED),
+    ])
+
+    drop_rows = np.setdiff1d(cand_idx, keep_rows)
+    kept = work.drop(index=drop_rows).reset_index(drop=True)
+    return kept, quarantined, decisions
+
+
+def resolve_duplicate_timestamps(
+    df: pd.DataFrame,
+    thresholds: CleaningThresholds = DEFAULT_THRESHOLDS,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Loại bản ghi trùng mốc thời gian (xem _resolve_duplicate_groups).
 
     Cần thiết vì trùng timestamp -> dt = 0 -> lỗi chia 0 khi tính speed.
+
+    Returns:
+        (kept, quarantined) - quarantined theo schema QUARANTINE_COLS.
     """
-    return df.drop_duplicates(subset=[COL_DATETIME], keep="first").copy()
+    kept, quarantined, _ = _resolve_duplicate_groups(df, thresholds)
+    return kept, quarantined
+
+
+# Stage 3b - Remove speed spikes
+def remove_speed_spikes(
+    df: pd.DataFrame,
+    thresholds: CleaningThresholds = DEFAULT_THRESHOLDS,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Loại điểm "gai": nhảy ra xa rồi quay lại ngay.
+
+    Điểm i là gai khi CẢ 3 điều kiện đúng:
+      - tốc độ (i-1 -> i)   > impossible_speed_kmh
+      - tốc độ (i -> i+1)   > impossible_speed_kmh
+      - tốc độ (i-1 -> i+1) <= impossible_speed_kmh (2 hàng xóm gần nhau)
+
+    Điều kiện 3 giữ nguyên các chuỗi di chuyển nhanh liên tục (không phải gai).
+    Với lỗi xen kẽ 2 vị trí A-B-A-B (user 025, 062) mọi điểm trong vùng đều
+    thoả 3 điều kiện nên cả vùng bị loại - không đoán chuỗi nào đúng.
+    Điểm đầu/cuối (thiếu 1 hàng xóm) không bị xét.
+
+    Yêu cầu: mốc thời gian đã duy nhất (chạy sau resolve_duplicate_timestamps).
+
+    Returns:
+        (kept, quarantined) - quarantined theo schema QUARANTINE_COLS.
+    """
+    t = thresholds
+    df = df.sort_values(COL_DATETIME, kind="stable").reset_index(drop=True)
+    if len(df) < 3:
+        return df, _as_quarantine(df.iloc[0:0], REASON_SPIKE)
+
+    ts = df[COL_DATETIME].to_numpy(dtype="datetime64[ns]")
+    lat = df[COL_LAT].to_numpy(dtype=float)
+    lon = df[COL_LON].to_numpy(dtype=float)
+    prev, mid, nxt = slice(None, -2), slice(1, -1), slice(2, None)
+
+    v_in = _speed_kmh(lat[prev], lon[prev], ts[prev], lat[mid], lon[mid], ts[mid])
+    v_out = _speed_kmh(lat[mid], lon[mid], ts[mid], lat[nxt], lon[nxt], ts[nxt])
+    v_skip = _speed_kmh(lat[prev], lon[prev], ts[prev], lat[nxt], lon[nxt], ts[nxt])
+
+    spike = np.zeros(len(df), dtype=bool)
+    spike[1:-1] = (
+        (v_in > t.impossible_speed_kmh)
+        & (v_out > t.impossible_speed_kmh)
+        & (v_skip <= t.impossible_speed_kmh)
+    )
+    return (
+        df[~spike].reset_index(drop=True),
+        _as_quarantine(df[spike], REASON_SPIKE),
+    )
 
 
 # Stage 4 - Clean altitude
@@ -181,7 +431,7 @@ def clean_altitude(
     return df
 
 
-# Stage 5 - Compute kinematics (Haversine vectorized)
+# Haversine vectorized
 _EARTH_RADIUS_M = 6_371_000.0  # metres
 
 
@@ -203,75 +453,19 @@ def _haversine_vectorized(
     return 2.0 * _EARTH_RADIUS_M * np.arcsin(np.sqrt(a))
 
 
-def compute_kinematics(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Tính các cột động học vectorized cho tất cả các điểm liên tiếp:
-      - delta_time_s  : chênh lệch thời gian (giây)
-      - speed_kmh     : vận tốc tức thời (km/h)
-    """
-    df = df.copy().sort_values(COL_DATETIME).reset_index(drop=True)
-
-    lat = df[COL_LAT].to_numpy()
-    lon = df[COL_LON].to_numpy()
-    ts = df[COL_DATETIME]
-
-    lat_prev = np.roll(lat, 1)
-    lat_prev[0] = lat[0]
-    lon_prev = np.roll(lon, 1)
-    lon_prev[0] = lon[0]
-
-    dist_m = _haversine_vectorized(lat_prev, lon_prev, lat, lon)
-    dist_m[0] = 0.0
-
-    dt_s = ts.diff().dt.total_seconds().to_numpy().copy()
-    dt_s[0] = 0.0
-    dt_safe = np.where(dt_s <= 0, np.nan, dt_s)
-
-    speed_kmh = (dist_m / dt_safe) * 3.6
-    speed_kmh[0] = np.nan
-
-    df[COL_DELTA_TIME_S] = dt_s
-    df["distance_m"] = dist_m
-    df[COL_SPEED_KMH] = speed_kmh
-
-    return df
-
-
-# Stage 6 - Filter GPS drift / unrealistic speed
-def filter_speed_drift(
-    df: pd.DataFrame,
-    thresholds: CleaningThresholds = DEFAULT_THRESHOLDS,
-) -> pd.DataFrame:
-    """
-    Loại bỏ các điểm GPS nhảy vọt (multipath effect) dựa trên vận tốc cực đoan.
-
-    Ngưỡng đã kiểm chứng: SPEED_LIMIT = 180 km/h
-
-    Điểm đầu tiên (NaN speed) luôn được giữ lại.
-    Sau khi lọc, tái tính kinematics cho các điểm còn lại.
-    """
-    t = thresholds
-    mask_ok = df[COL_SPEED_KMH].isna() | (df[COL_SPEED_KMH] <= t.max_speed_kmh)
-    df = df[mask_ok].copy().reset_index(drop=True)
-
-    # Tái tính kinematics sau khi lọc
-    df = compute_kinematics(df)
-
-    return df
-
-
-# Stage 7 - Segment trajectory by time gaps
+# Stage 6 - Segment trajectory
 def segment_trajectories(
     df: pd.DataFrame,
     thresholds: CleaningThresholds = DEFAULT_THRESHOLDS,
 ) -> pd.DataFrame:
     """
-    Chia quỹ đạo thành các sub_trip_id khi khoảng trống thời gian vượt ngưỡng.
+    Chia quỹ đạo thành các segment (sub_trip_id). Cắt segment mới tại điểm i khi:
+      - dt(i-1 -> i) > max_gap_seconds (notebooks/03_segment_gap_threshold.ipynb), hoặc
+      - tốc độ(i-1 -> i) > impossible_speed_kmh: bước nhảy không thể là di chuyển
+        thật nhưng không xác định được phía nào sai (khối lệch dài tới 9,447
+        điểm / 15 giờ, hoặc lệch một phía) -> giữ điểm, chỉ ngắt nối.
 
-    Ngưỡng đã kiểm chứng: dt > 1200 s (20 phút) -> cắt chặng mới.
-
-    Thuật toán: Cumulative Sum vectorized - mỗi khi gap > threshold,
-    tăng sub_trip_id lên 1.
+    Thuật toán: cumsum các điểm cắt.
     """
     t = thresholds
     df = df.copy().sort_values(COL_DATETIME).reset_index(drop=True)
@@ -280,147 +474,136 @@ def segment_trajectories(
         df[COL_SUB_TRIP_ID] = 0
         return df
 
-    is_new_trip = (df[COL_DELTA_TIME_S] > t.max_gap_seconds).fillna(False)
-    df[COL_SUB_TRIP_ID] = is_new_trip.cumsum()
+    ts = df[COL_DATETIME].to_numpy(dtype="datetime64[ns]")
+    lat = df[COL_LAT].to_numpy(dtype=float)
+    lon = df[COL_LON].to_numpy(dtype=float)
+    dt_s = (ts[1:] - ts[:-1]) / np.timedelta64(1, "s")
+    speed = _speed_kmh(lat[:-1], lon[:-1], ts[:-1], lat[1:], lon[1:], ts[1:])
+
+    is_new = np.zeros(len(df), dtype=bool)
+    is_new[1:] = (dt_s > t.max_gap_seconds) | (speed > t.impossible_speed_kmh)
+    df[COL_SUB_TRIP_ID] = np.cumsum(is_new)
 
     return df
 
 
-# Stage 8 - Load transport labels
-def load_labels(user_dir: Path) -> pd.DataFrame | None:
+def recheck_invalid_anchor_groups(
+    df: pd.DataFrame,
+    quarantined: pd.DataFrame,
+    thresholds: CleaningThresholds = DEFAULT_THRESHOLDS,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
-    Đọc file labels.txt của một user (nếu tồn tại).
+    Xử lý lại các nhóm trùng bị quarantine vì 2 điểm neo cách nhau bất khả thi
+    (REASON_DUPLICATE_INVALID_ANCHORS), SAU khi đã loại điểm gai.
 
-    Định dạng labels.txt (bỏ dòng header):
-      start_date  start_time  end_date  end_time  mode
+    Bước xử lý trùng chạy trước bước loại điểm gai, nên điểm neo có thể chính là
+    một điểm gai. Với mỗi nhóm như vậy, lấy 2 điểm neo mới từ ``df`` (đã loại
+    gai) rồi chạy lại đúng quy tắc của _resolve_duplicate_groups trên khung
+    [điểm neo trước, các ứng viên, điểm neo sau]. Nhóm vẫn không phân định được
+    thì giữ nguyên trong quarantine. Không xoá thêm điểm neo nào: chỉ quy tắc
+    điểm gai (đã có bằng chứng) được phép loại điểm neo. Kiểm chứng:
+    notebooks/02_duplicate_timestamps.ipynb mục 3.3 (13/16 nhóm cứu được).
 
     Returns:
-        DataFrame với columns: start_datetime, end_datetime, mode
-        hoặc None nếu file không tồn tại hoặc lỗi.
+        (df, quarantined) đã cập nhật.
     """
-    labels_path = user_dir / "labels.txt"
-    if not labels_path.exists():
-        return None
+    t = thresholds
+    is_bad = quarantined[COL_REASON] == REASON_DUPLICATE_INVALID_ANCHORS
+    if not is_bad.any():
+        return df, quarantined
 
-    try:
-        df = pd.read_csv(
-            labels_path,
-            sep=r"\s+",
-            skiprows=1,  # bỏ dòng "Start Time  ...  Transportation Mode"
-            header=None,
-            names=["start_date", "start_time", "end_date", "end_time", COL_MODE],
+    df = df.sort_values(COL_DATETIME, kind="stable").reset_index(drop=True)
+    ts = df[COL_DATETIME].to_numpy(dtype="datetime64[ns]")
+    rescued, requarantined = [], []
+    for when, group in quarantined[is_bad].groupby(COL_DATETIME, sort=False):
+        i = int(np.searchsorted(ts, np.datetime64(when)))
+        if i == 0 or i == len(df):          # thiếu 1 điểm neo -> không kiểm lại được
+            requarantined.append(group)
+            continue
+        frame = pd.concat(
+            [df.iloc[[i - 1]], group.drop(columns=COL_REASON), df.iloc[[i]]], ignore_index=True
         )
-        df["start_datetime"] = pd.to_datetime(
-            df["start_date"] + " " + df["start_time"],
-            format="%Y/%m/%d %H:%M:%S",
-            errors="coerce",
-        )
-        df["end_datetime"] = pd.to_datetime(
-            df["end_date"] + " " + df["end_time"],
-            format="%Y/%m/%d %H:%M:%S",
-            errors="coerce",
-        )
-        df = df.dropna(subset=["start_datetime", "end_datetime"])
-        return df[["start_datetime", "end_datetime", COL_MODE]].reset_index(drop=True)
-    except Exception as exc:
-        warnings.warn(f"Không đọc được labels.txt của {user_dir.name}: {exc}")
-        return None
+        kept, q, _ = _resolve_duplicate_groups(frame, t)
+        rescued.append(kept[kept[COL_DATETIME] == when])
+        requarantined.append(q)
+
+    df = (
+        pd.concat([df, *[r for r in rescued if len(r)]], ignore_index=True)
+        .sort_values(COL_DATETIME, kind="stable")
+        .reset_index(drop=True)
+    )
+    return df, _concat_quarantine([quarantined[~is_bad], *requarantined])
 
 
-# REFACTOR v2: match_labels dùng pd.merge_asof vectorized - THAY THẾ iterrows()
-def match_labels(df: pd.DataFrame, labels_df: pd.DataFrame | None) -> pd.DataFrame:
-    """
-    Gán nhãn phương tiện di chuyển vào từng điểm GPS dựa trên khoảng thời gian.
-    Chính xác 100% theo logic Left Interval Matching (Vectorized NumPy).
-    """
-    df = df.copy()
-    df[COL_MODE] = "unknown"
-
-    if labels_df is None or labels_df.empty:
-        return df
-
-    # Chuyển vector thời gian sang mảng numpy int64/datetime64 để so sánh ở tầng C
-    gps_times = df[COL_DATETIME].to_numpy()
-
-    # File labels chỉ có ~200 dòng, duyệt cực nhanh (~1ms)
-    for _, row in labels_df.iterrows():
-        start = np.datetime64(row["start_datetime"])
-        end = np.datetime64(row["end_datetime"])
-        mode = row[COL_MODE]
-
-        # Tìm các điểm GPS nằm lọt hoàn toàn trong khoảng thời gian
-        mask = (gps_times >= start) & (gps_times <= end)
-        if np.any(mask):
-            df.loc[mask, COL_MODE] = mode
-
-    return df
+def _concat_quarantine(parts: list[pd.DataFrame]) -> pd.DataFrame:
+    """Gộp các khung quarantine, bỏ khung rỗng (tránh cảnh báo dtype của pandas)."""
+    parts = [p for p in parts if len(p)]
+    if not parts:
+        return pd.DataFrame(columns=QUARANTINE_COLS)
+    return pd.concat(parts, ignore_index=True)
 
 
-# ── Convenience wrapper ─────────────────────────────────────────────────────────
-
-
-def clean_and_segment_trajectory(
+def clean_trajectory(
     plt_path: Path | str,
     user_id: str,
-    labels: pd.DataFrame | None,
     thresholds: CleaningThresholds | None = None,
-) -> pd.DataFrame | None:
-    """Run the full pipeline on a single .plt file.
+) -> tuple[pd.DataFrame | None, pd.DataFrame]:
+    """
+    Làm sạch MỘT file .plt - pipeline duy nhất, đầu vào cho stay-point detection
+    và classifier.
 
-    Pipeline: load → physical bounds → deduplicate → altitude → kinematics →
-    speed filter → segment → label match.
-
-    Args:
-        plt_path: Path to the .plt file.
-        user_id: User identifier (written into the output DataFrame).
-        labels: Optional labels DataFrame (from :func:`load_labels`).
-        thresholds: Cleaning thresholds (default: ``DEFAULT_THRESHOLDS``).
+    Steps:
+      1. load_plt_file
+      2. filter_physical_bounds
+      3. resolve_duplicate_timestamps  - quarantine nhóm không phân định được
+      4. remove_speed_spikes           - quarantine điểm gai
+         + recheck_invalid_anchor_groups - nhóm trùng có điểm neo là điểm gai
+           được xử lý lại với điểm neo mới
+      5. clean_altitude                - -777 -> mét
+      6. segment_trajectories          - cắt gap > 20 phút hoặc bước nhảy > 1100 km/h
+      7. localize_by_location          - GMT -> giờ địa phương theo múi giờ của toạ độ
+                                         (tz_name, timestamp_local naive)
 
     Returns:
-        Cleaned DataFrame, or ``None`` if the file is unreadable.
+        (df, quarantined)
+        df: columns user_id, source_file, datetime, timestamp_local, tz_name, lat,
+            lon, altitude, altitude_m, sub_trip_id - hoặc None nếu file không đọc
+            được / không đủ điểm.
+        quarantined: các dòng bị loại ở bước 3-4 (schema QUARANTINE_COLS).
     """
-    if thresholds is None:
-        thresholds = DEFAULT_THRESHOLDS
+    from gps.data.timezone import localize_by_location
+
+    t = thresholds or DEFAULT_THRESHOLDS
+
     df = load_plt_file(plt_path)
     if df is None or df.empty:
-        return None
+        return None, _concat_quarantine([])
+
     df[COL_USER_ID] = user_id
-    df = filter_physical_bounds(df, thresholds)
-    df = deduplicate_timestamps(df)
-    df = clean_altitude(df, thresholds)
-    df = compute_kinematics(df)
-    df = filter_speed_drift(df, thresholds)
-    df = segment_trajectories(df, thresholds)
-    df = match_labels(df, labels)
-    return df
+    df[COL_SOURCE_FILE] = Path(plt_path).name
 
+    df = filter_physical_bounds(df, t)
+    if len(df) < t.min_points:
+        return None, _concat_quarantine([])
 
-def build_labels_cache(data_dir: Path) -> dict[str, pd.DataFrame | None]:
-    """
-    Đọc labels.txt MỘT LẦN cho mỗi user, trả về dict để reuse trong workers.
+    df, q_dup = resolve_duplicate_timestamps(df, t)
+    df, q_spike = remove_speed_spikes(df, t)
+    df, q_dup = recheck_invalid_anchor_groups(df, q_dup, t)
+    quarantined = _concat_quarantine([q_dup, q_spike])
+    if len(df) < t.min_points:
+        return None, quarantined
 
-    Key: user_id (string như "000", "010")
-    Value: DataFrame đã parse hoặc None nếu user không có labels.txt
-    """
-    cache: dict[str, pd.DataFrame | None] = {}
-    user_dirs: list[Path] = []
+    df = clean_altitude(df, t)
+    df = segment_trajectories(df, t)
+    df = _make_sub_trip_id(df, user_id, Path(plt_path).stem)
+    df = localize_by_location(df, column=COL_DATETIME, output_column=COL_TIMESTAMP_LOCAL, tz_column=COL_TZ_NAME)
 
-    # Hỗ trợ 2 cấu trúc thư mục
-    if (data_dir / "Trajectory").exists():
-        user_dirs = [data_dir]
-    else:
-        user_dirs = [
-            d for d in sorted(data_dir.iterdir())
-            if d.is_dir() and d.name.isdigit()
-        ]
-
-    for user_dir in user_dirs:
-        user_id = user_dir.name
-        cache[user_id] = load_labels(user_dir)
-
-    labeled = sum(1 for v in cache.values() if v is not None)
-    log.info("Đã preload %d/%d users có labels.txt.", labeled, len(cache))
-    return cache
+    output_cols = [
+        COL_USER_ID, COL_SOURCE_FILE, COL_DATETIME, COL_TIMESTAMP_LOCAL, COL_TZ_NAME,
+        COL_LAT, COL_LON, COL_ALTITUDE_RAW, COL_ALTITUDE_M,
+        COL_SUB_TRIP_ID,
+    ]
+    return df[output_cols].reset_index(drop=True), quarantined
 
 
 def _make_sub_trip_id(
@@ -440,160 +623,87 @@ def _make_sub_trip_id(
     return df
 
 
-# Worker - nhận labels_df trực tiếp, gán unique sub_trip_id
+# Worker - pickle-able, chạy trong ProcessPoolExecutor
 def _process_single_file(
-    args: tuple[Path, str, str, pd.DataFrame | None],
-) -> pd.DataFrame | None:
+    args: tuple[Path, str, CleaningThresholds],
+) -> tuple[pd.DataFrame | None, pd.DataFrame]:
     """
-    Worker function - pickle-able.
-
     Args:
-        args[0]: plt_path       - đường dẫn file .plt
-        args[1]: user_id        - user ID (string)
-        args[2]: plt_stem       - tên file .plt không extension (dùng cho sub_trip_id)
-        args[3]: labels_df      - DataFrame đã parse sẵn từ labels_cache (None nếu
-                                  user không có labels.txt)
+        args[0]: plt_path   - đường dẫn file .plt
+        args[1]: user_id    - user ID (string)
+        args[2]: thresholds
+
+    Returns:
+        (df hoặc None, quarantined) - xem clean_trajectory.
     """
-    plt_path, user_id, plt_stem, labels_df = args
-    t = DEFAULT_THRESHOLDS
-
-    # 1. Load
-    try:
-        df = load_plt_file(plt_path)
-    except Exception as exc:
-        warnings.warn(f"Lỗi đọc file {plt_path.name}: {exc}")
-        return None
-
-    if len(df) < t.min_points:
-        return None
-
-    # 2. Physical bounds
-    df = filter_physical_bounds(df, t)
-    if len(df) < t.min_points:
-        return None
-
-    # 3. Deduplicate timestamps
-    df = deduplicate_timestamps(df)
-    if len(df) < t.min_points:
-        return None
-
-    # 4. Clean altitude
-    df = clean_altitude(df, t)
-
-    # 5. Compute kinematics
-    df = compute_kinematics(df)
-    if len(df) < t.min_points:
-        return None
-
-    # 6. Filter speed drift
-    df = filter_speed_drift(df, t)
-    if len(df) < t.min_points:
-        return None
-
-    # 7. Segment by time gaps
-    df = segment_trajectories(df, t)
-
-    # Gán sub_trip_id DUY NHẤT trước khi trả về
-    df = _make_sub_trip_id(df, user_id, plt_stem)
-
-    # 8. Match labels (đã có sẵn DataFrame, không cần đọc lại file)
-    df = match_labels(df, labels_df)
-
-    # Metadata
-    df[COL_USER_ID] = user_id
-    df[COL_SOURCE_FILE] = plt_path.name
-
-    # Drop helper column distance_m
-    if "distance_m" in df.columns:
-        df = df.drop(columns=["distance_m"])
-
-    # Sort output columns
-    output_cols = [
-        COL_USER_ID, COL_SOURCE_FILE, COL_DATETIME,
-        COL_LAT, COL_LON, COL_ALTITUDE_RAW, COL_ALTITUDE_M,
-        COL_DELTA_TIME_S, COL_SPEED_KMH, COL_SUB_TRIP_ID, COL_MODE,
-    ]
-    return df[output_cols]
+    plt_path, user_id, thresholds = args
+    return clean_trajectory(plt_path, user_id, thresholds)
 
 
-# REFACTOR v2: _process_single_user - xử lý tất cả .plt của 1 user bằng workers
 def _process_single_user(
     user_id: str,
     plt_paths: list[Path],
-    labels_df: pd.DataFrame | None,
     n_workers: int,
-) -> list[pd.DataFrame]:
+    thresholds: CleaningThresholds = DEFAULT_THRESHOLDS,
+) -> tuple[list[pd.DataFrame], list[pd.DataFrame]]:
     """
     Xử lý tất cả .plt của MỘT user bằng ProcessPoolExecutor nội bộ user.
 
     Args:
         user_id     : ID của user (string)
         plt_paths   : Danh sách đường dẫn file .plt của user này
-        labels_df   : DataFrame đã parse từ labels.txt của user
         n_workers   : Số worker cho ProcessPoolExecutor
+        thresholds  : ngưỡng thuật toán
 
     Returns:
-        List các DataFrame đã xử lý (có thể rỗng nếu tất cả thất bại)
+        (các DataFrame đã xử lý, các DataFrame quarantine) - có thể rỗng.
     """
-    # Build tasks cho user này
-    tasks = [
-        (plt_path, user_id, plt_path.stem, labels_df)
-        for plt_path in plt_paths
-    ]
+    tasks = [(plt_path, user_id, thresholds) for plt_path in plt_paths]
 
     user_dfs: list[pd.DataFrame] = []
+    quarantine_dfs: list[pd.DataFrame] = []
     failed = 0
 
     # ProcessPoolExecutor riêng cho user này
     with ProcessPoolExecutor(max_workers=n_workers) as executor:
-        futures = {executor.submit(_process_single_file, task): task for task in tasks}
+        futures = [executor.submit(_process_single_file, task) for task in tasks]
 
         for future in as_completed(futures):
-            task = futures[future]
             try:
-                df_result = future.result()
-                if df_result is not None and not df_result.empty:
-                    user_dfs.append(df_result)
-                else:
-                    failed += 1
-            except Exception:
+                df_result, quarantined = future.result()
+            except Exception as exc:
+                log.debug("  User %s: lỗi xử lý file: %s", user_id, exc)
+                failed += 1
+                continue
+            if len(quarantined):
+                quarantine_dfs.append(quarantined)
+            if df_result is not None and not df_result.empty:
+                user_dfs.append(df_result)
+            else:
                 failed += 1
 
     if failed > 0:
         log.debug("  User %s: %d/%d file thất bại.", user_id, failed, len(tasks))
 
-    return user_dfs
+    return user_dfs, quarantine_dfs
 
 
-# REFACTOR v2: _write_single_user_parquet - ghi 1 user ra parquet, giải phóng RAM
 def _write_single_user_parquet(
     user_id: str,
-    user_dfs: list[pd.DataFrame],
+    df_user: pd.DataFrame,
     output_dir: Path,
 ) -> int:
     """
-    Ghi các DataFrame của một user thành 1 file parquet.
+    Ghi điểm sạch của một user thành 1 file parquet.
 
     Args:
         user_id     : ID của user
-        user_dfs    : List các DataFrame đã xử lý của user
+        df_user     : mọi điểm sạch của user (các file .plt đã nối)
         output_dir  : Thư mục output
 
     Returns:
         Số dòng đã ghi
     """
-    if not user_dfs:
-        return 0
-
-    # Concatenate chỉ những file của user này - RAM chỉ chứa 1 user tại 1 thời điểm
-    df_user = pd.concat(user_dfs, ignore_index=True)
-
-    # Add a tz-aware `timestamp_local` column (Asia/Shanghai, UTC+8) so
-    # downstream consumers (heuristic .hour, API responses) read local time
-    # directly without re-converting. The original naive GMT `timestamp`
-    # column is preserved for audit / re-processing.
-    from gps.data.timezone import localize_dataframe_column
-    df_user = localize_dataframe_column(df_user)
     total_rows = len(df_user)
 
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -620,150 +730,165 @@ def _write_single_user_parquet(
     return total_rows
 
 
-# REFACTOR v2: process_all_trajectories - xử lý tuần tự theo User
+def _write_single_user_stay_points(
+    user_id: str,
+    df_user: pd.DataFrame,
+    stay_dir: Path,
+) -> int:
+    """Stay-point của 1 user trên mọi điểm sạch (detector tự cắt tại khoảng ngắt
+    > 18 h) -> parquet. Ghi cả khi không có stay-point nào (file rỗng đúng schema),
+    để phân biệt "đã xử lý, 0 stay-point" với "chưa xử lý". Trả về số stay-point."""
+    from gps.features.stay_point import StayPointDetector, stay_points_to_frame
+
+    stays = stay_points_to_frame(StayPointDetector().detect(df_user), user_id)
+    stay_dir.mkdir(parents=True, exist_ok=True)
+    stays.to_parquet(stay_dir / f"user_{user_id}.parquet", index=False)
+    return len(stays)
+
+
+def _write_single_user_quarantine(
+    user_id: str,
+    quarantine_dfs: list[pd.DataFrame],
+    quarantine_dir: Path,
+) -> int:
+    """Ghi các dòng bị loại ở bước trùng timestamp / điểm gai của 1 user ra CSV
+    để soát tay. Trả về số dòng đã ghi (0 nếu không có gì để ghi)."""
+    df_q = _concat_quarantine(quarantine_dfs)
+    if df_q.empty:
+        return 0
+    quarantine_dir.mkdir(parents=True, exist_ok=True)
+    df_q.sort_values([COL_SOURCE_FILE, COL_DATETIME]).to_csv(
+        quarantine_dir / f"user_{user_id}.csv", index=False,
+    )
+    return len(df_q)
+
+
+def _find_users(data_dir: Path) -> dict[str, list[Path]]:
+    """user_id -> các file .plt. Hỗ trợ data_dir là thư mục của 1 user
+    (data_dir/Trajectory/*.plt) hoặc thư mục chứa nhiều user (data_dir/010/...)."""
+    if (data_dir / "Trajectory").exists():
+        user_dirs = [data_dir]
+    else:
+        user_dirs = [d for d in sorted(data_dir.iterdir()) if d.is_dir() and d.name.isdigit()]
+    users = {}
+    for user_dir in user_dirs:
+        plt_paths = sorted((user_dir / "Trajectory").glob("*.plt"))
+        if plt_paths:
+            users[user_dir.name] = plt_paths
+    return users
+
+
 def process_all_trajectories(
     data_dir: Path | str,
     output_dir: Path | str | None = None,
     n_workers: int | None = None,
     thresholds: CleaningThresholds = DEFAULT_THRESHOLDS,
+    max_users: int | None = None,
+    detect_stay_points: bool = True,
 ) -> dict:
     """
-    Xử lý toàn bộ file .plt trong data_dir - TUẦN TỰ THEO USER.
+    Làm sạch toàn bộ file .plt trong data_dir - TUẦN TỰ THEO USER.
 
-    REFACTOR v2 - Chống tràn RAM 97% & quá nhiệt CPU 95°C:
+    Chống tràn RAM & quá nhiệt CPU:
       1. Duyệt tuần tự từng User folder (user 000, 001, ...)
       2. Với mỗi user, dùng ProcessPoolExecutor xử lý các file .plt của user đó
       3. Ngay khi user xong: Gộp -> Lưu parquet -> gc.collect() -> sang user tiếp
-      4. n_workers = min(4, os.cpu_count()) - tránh quá nhiệt
+      4. n_workers = min(4, os.cpu_count())
 
     Args:
-        data_dir   : thư mục Data (chứa các folder user: 000/, 001/, ...)
+        data_dir   : thư mục chứa các folder user (000/, 001/, ...) hoặc thư mục
+                     của 1 user
         output_dir : thư mục chứa các file user_*.parquet
                      [default: data_dir.parent/processed/users/]
+                     Điểm bị loại được ghi vào output_dir.parent/quarantine/,
+                     stay-point vào output_dir.parent/staypoints/
         n_workers  : số CPU worker (mặc định: min(4, os.cpu_count()))
         thresholds : ngưỡng thuật toán
+        max_users  : chỉ xử lý N user đầu tiên (mặc định: tất cả)
+        detect_stay_points : tìm và ghi stay-point cho từng user (mặc định: có)
 
     Returns:
-        Dict tổng kết với keys: total_rows, n_users, mode_dist, output_dir
+        Dict tổng kết với keys: total_rows, n_users, n_quarantined, n_stay_points,
+        output_dir ({} nếu không tìm thấy file .plt nào).
     """
     data_dir = Path(data_dir)
-    if output_dir is None:
-        output_dir = data_dir.parent / "processed" / "users"
-    else:
-        output_dir = Path(output_dir)
-
-    # REFACTOR v2: Giới hạn workers an toàn
+    output_dir = Path(output_dir) if output_dir is not None else data_dir.parent / "processed" / "users"
     if n_workers is None:
         n_workers = min(4, os.cpu_count() or 4)
 
-    log.info("=== REFACTOR v2: Xử lý tuần tự theo User ===")
+    log.info("=== Xử lý tuần tự theo User ===")
     log.info("  n_workers = %d (max 4, tránh quá nhiệt)", n_workers)
     log.info("  output_dir = %s", output_dir)
 
-    # Quét toàn bộ user folders
-    log.info("Đang quét toàn bộ User folders trong %s ...", data_dir)
-
-    user_info: dict[str, dict] = {}  # user_id -> {plt_paths: [...], labels_df}
-
-    if (data_dir / "Trajectory").exists():
-        # Cấu trúc 1: data_dir/010/Trajectory/...
-        user_id = data_dir.name
-        labels_df = load_labels(data_dir)
-        plt_paths = sorted((data_dir / "Trajectory").glob("*.plt"))
-        user_info[user_id] = {
-            "plt_paths": plt_paths,
-            "labels_df": labels_df,
-        }
-        log.info("  User %s: %d file .plt, labels: %s", user_id, len(plt_paths), labels_df is not None)
-    else:
-        # Cấu trúc 2: data_dir/Data/010/...
-        for user_dir in sorted(data_dir.iterdir()):
-            if not user_dir.is_dir() or not user_dir.name.isdigit():
-                continue
-            user_id = user_dir.name
-            labels_df = load_labels(user_dir)
-
-            traj_dir = user_dir / "Trajectory"
-            if not traj_dir.exists():
-                continue
-
-            plt_paths = sorted(traj_dir.glob("*.plt"))
-            if plt_paths:
-                user_info[user_id] = {
-                    "plt_paths": plt_paths,
-                    "labels_df": labels_df,
-                }
-                log.info("  User %s: %d file .plt, labels: %s", user_id, len(plt_paths), labels_df is not None)
-
-    total_users = len(user_info)
+    users = _find_users(data_dir)
+    total_users = len(users)
     if total_users == 0:
-        log.error("Không tìm thấy User folder nào với file .plt.")
+        log.error("Không tìm thấy User folder nào với file .plt trong %s.", data_dir)
         return {}
+    if max_users is not None and max_users > 0:
+        users = dict(sorted(users.items())[:max_users])
+        log.info("Giới hạn xử lý: %d/%d users (max_users=%d)", len(users), total_users, max_users)
+    log.info("Tìm thấy %d users, tổng %d file .plt.", len(users), sum(map(len, users.values())))
 
-    total_files = sum(len(u["plt_paths"]) for u in user_info.values())
-    log.info("Tìm thấy %d users, tổng %d file .plt.", total_users, total_files)
-
-    # Xử lý tuần tự từng USER
     output_dir.mkdir(parents=True, exist_ok=True)
+    quarantine_dir = output_dir.parent / "quarantine"
+    stay_dir = output_dir.parent / "staypoints"
     total_rows = 0
-    mode_dist: dict[str, int] = {}
+    total_quarantined = 0
+    total_stay_points = 0
     processed_users = 0
 
-    for user_id, info in sorted(user_info.items()):
-        plt_paths = info["plt_paths"]
-        labels_df = info["labels_df"]
+    for k, (user_id, plt_paths) in enumerate(sorted(users.items()), start=1):
+        log.info("[%d/%d] Xử lý User %s (%d file) ...", k, len(users), user_id, len(plt_paths))
 
-        log.info(
-            "\n[%d/%d] Xử lý User %s (%d file) ...",
-            processed_users + 1, total_users, user_id, len(plt_paths),
-        )
-
-        # ProcessPoolExecutor cho user này
-        user_dfs = _process_single_user(
+        user_dfs, quarantine_dfs = _process_single_user(
             user_id=user_id,
             plt_paths=plt_paths,
-            labels_df=labels_df,
             n_workers=n_workers,
+            thresholds=thresholds,
         )
+
+        n_q = _write_single_user_quarantine(user_id, quarantine_dfs, quarantine_dir)
+        total_quarantined += n_q
+        if n_q:
+            log.info("  User %s: %d điểm bị đưa vào quarantine.", user_id, n_q)
 
         if not user_dfs:
             log.warning("  User %s: không có file nào xử lý thành công.", user_id)
-            # Vẫn tiếp tục sang user tiếp theo
             continue
 
-        # Ghi parquet cho user này
-        user_rows = _write_single_user_parquet(user_id, user_dfs, output_dir)
-        total_rows += user_rows
-
-        # Tính mode distribution cho user này (trước khi xóa)
-        df_sample = pd.concat(user_dfs, ignore_index=True)
-        for mode, count in df_sample[COL_MODE].value_counts().items():
-            mode_dist[mode] = mode_dist.get(mode, 0) + count
-
-        # REFACTOR v2: GIẢI PHÓNG RAM LẬP TỨC
+        # Nối chỉ những file của user này - RAM chỉ chứa 1 user tại 1 thời điểm. Các file xong
+        # theo thứ tự bất kỳ (as_completed), nên sắp lại để output giống hệt nhau giữa các lần chạy.
+        df_user = pd.concat(user_dfs, ignore_index=True).sort_values(
+            [COL_SOURCE_FILE, COL_DATETIME], kind="stable", ignore_index=True)
         del user_dfs
-        del df_sample
+        user_rows = _write_single_user_parquet(user_id, df_user, output_dir)
+        total_rows += user_rows
+        n_sp = _write_single_user_stay_points(user_id, df_user, stay_dir) if detect_stay_points else 0
+        total_stay_points += n_sp
+
+        # Giải phóng RAM ngay sau mỗi user
+        del df_user
         gc.collect()
 
-        log.info("  User %s: %d dòng đã ghi. RAM đã giải phóng.", user_id, user_rows)
+        log.info("  User %s: %d dòng, %d stay-point đã ghi. RAM đã giải phóng.", user_id, user_rows, n_sp)
         processed_users += 1
 
-    # Tổng kết
-    log.info("\n=== HOÀN TẤT ===")
-    log.info("  Users xử lý thành công: %d/%d", processed_users, total_users)
-
-    # Tính kích thước output
     parquet_files = list(output_dir.glob("user_*.parquet"))
     total_size_mb = sum(f.stat().st_size for f in parquet_files) / 1e6
-
+    log.info("=== HOÀN TẤT ===")
+    log.info("  Users xử lý thành công: %d/%d", processed_users, len(users))
     log.info("  Tổng dòng GPS: %d", total_rows)
     log.info("  Tổng kích thước: %.1f MB", total_size_mb)
-    log.info("  Mode phân bố: %s", dict(sorted(mode_dist.items(), key=lambda x: -x[1])[:5]))
+    log.info("  Điểm quarantine: %d (-> %s)", total_quarantined, quarantine_dir)
+    if detect_stay_points:
+        log.info("  Stay-point: %d (-> %s)", total_stay_points, stay_dir)
 
     return {
         "total_rows": total_rows,
         "n_users": processed_users,
-        "mode_dist": mode_dist,
+        "n_quarantined": total_quarantined,
+        "n_stay_points": total_stay_points,
         "output_dir": output_dir,
     }
 
@@ -771,7 +896,7 @@ def process_all_trajectories(
 # CLI - argparse entry point
 def _build_argparser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="python -m src.data.processing",
+        prog="python -m gps.data.processing",
         description="GeoLife GPS Cleaning Pipeline - .plt thô -> partitioned Parquet sạch.",
     )
     p.add_argument(
@@ -786,7 +911,7 @@ def _build_argparser() -> argparse.ArgumentParser:
         type=Path,
         default=None,
         help="Thư mục output cho partitioned parquet "
-             "[default: data/processed_v1/]",
+             "[default: <data-dir>/../processed/users/]",
     )
     p.add_argument(
         "--workers", "-w",
@@ -795,16 +920,22 @@ def _build_argparser() -> argparse.ArgumentParser:
         help="Số CPU worker [default: min(4, os.cpu_count())]",
     )
     p.add_argument(
-        "--max-speed",
-        type=float,
-        default=180.0,
-        help="Ngưỡng lọc GPS drift, km/h [default: 180]",
-    )
-    p.add_argument(
         "--gap-seconds",
         type=float,
         default=1200.0,
-        help="Ngưỡng cắt chặng hành trình, giây [default: 1200 = 20 phút]",
+        help="Ngưỡng cắt segment, giây [default: 1200 = 20 phút]",
+    )
+    p.add_argument(
+        "--max-users",
+        type=int,
+        default=None,
+        help="Giới hạn số user xử lý (mặc định: tất cả). "
+             "VD: --max-users 50 để chỉ xử lý 50 user đầu tiên.",
+    )
+    p.add_argument(
+        "--no-stay-points",
+        action="store_true",
+        help="Không tìm stay-point (chỉ làm sạch điểm GPS)",
     )
     p.add_argument(
         "--verbose", "-v",
@@ -821,27 +952,24 @@ if __name__ == "__main__":
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
 
-    thresholds = CleaningThresholds(
-        max_speed_kmh=args.max_speed,
-        max_gap_seconds=args.gap_seconds,
-    )
-
     start = datetime.now()
     result = process_all_trajectories(
         data_dir=args.data_dir,
         output_dir=args.output_dir,
         n_workers=args.workers,
-        thresholds=thresholds,
+        thresholds=CleaningThresholds(max_gap_seconds=args.gap_seconds),
+        max_users=args.max_users,
+        detect_stay_points=not args.no_stay_points,
     )
     elapsed = (datetime.now() - start).total_seconds()
 
-    if result:
-        log.info("TỔNG KẾT:")
-        log.info("  Tổng điểm GPS:    %s", f"{result['total_rows']:,}")
-        log.info("  Số users:          %d", result["n_users"])
-        log.info("  Mode phân bố:     %s", result["mode_dist"])
-        log.info("  Output dir:        %s", result["output_dir"])
-        log.info("  Thời gian xử lý:  %.1f s (%.1f phút)", elapsed, elapsed / 60)
-    else:
+    if not result:
         log.error("Pipeline không tạo được output.")
         sys.exit(1)
+    log.info("TỔNG KẾT:")
+    log.info("  Tổng điểm GPS:    %s", f"{result['total_rows']:,}")
+    log.info("  Số users:          %d", result["n_users"])
+    log.info("  Điểm quarantine:   %d", result["n_quarantined"])
+    log.info("  Stay-point:        %d", result["n_stay_points"])
+    log.info("  Output dir:        %s", result["output_dir"])
+    log.info("  Thời gian xử lý:  %.1f s (%.1f phút)", elapsed, elapsed / 60)

@@ -1,0 +1,16 @@
+metric,value
+t_max_h,18.0
+plateau_resume_within_200m_pct,19.7
+random_file_baseline_pct,9.8
+recovered_nights_within_200m_of_observed_night,0.495
+per_file_day_within_200m_of_observed_night,0.243
+stay_points_per_file,12856.0
+stay_points_chained,18598.0
+stays_spanning_files_per_file,0.0
+stays_spanning_files_chained,6193.0
+night_stays_per_file,395.0
+night_stays_chained,3340.0
+users_without_night_stay_per_file,96.0
+users_without_night_stay_chained,41.0
+max_duration_h_per_file,30.668
+max_duration_h_chained,43.782

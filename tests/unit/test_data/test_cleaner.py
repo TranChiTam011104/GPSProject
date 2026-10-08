@@ -1,6 +1,6 @@
 """Unit tests for GPS cleaner."""
 import pytest
-from src.data.cleaner import GPSCleaner, CleaningConfig
+from gps.data.cleaner import GPSCleaner, CleaningConfig
 
 
 class TestGPSCleaner:

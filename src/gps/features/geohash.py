@@ -2,7 +2,7 @@
 Geohash encoding and utilities for location representation.
 """
 import pandas as pd
-from typing import Optional, Tuple
+from typing import Tuple
 
 import geohash2 as geohash
 
@@ -26,18 +26,18 @@ class GeohashEncoder:
         """
         self.precision = precision
 
-    def encode(self, lat: float, lng: float) -> str:
+    def encode(self, lat: float, lon: float) -> str:
         """
         Encode latitude/longitude to geohash string.
         
         Args:
             lat: Latitude (-90 to 90)
-            lng: Longitude (-180 to 180)
+            lon: Longitude (-180 to 180)
             
         Returns:
             Geohash string
         """
-        return geohash.encode(lat, lng, precision=self.precision)
+        return geohash.encode(lat, lon, precision=self.precision)
 
     def decode(self, hash_string: str) -> Tuple[float, float]:
         """
@@ -59,14 +59,14 @@ class GeohashEncoder:
             hash_string: Geohash string
             
         Returns:
-            Dictionary with min/max lat/lng
+            Dictionary with min/max lat/lon
         """
         bbox = geohash.decode_bbox(hash_string)
         return {
             "min_lat": bbox[0],
-            "min_lng": bbox[1],
+            "min_lon": bbox[1],
             "max_lat": bbox[2],
-            "max_lng": bbox[3]
+            "max_lon": bbox[3]
         }
 
     def neighbors(self, hash_string: str) -> dict:
@@ -81,35 +81,21 @@ class GeohashEncoder:
         """
         return geohash.neighbors(hash_string)
 
-    def expand(self, hash_string: str, precision: int = None) -> list:
-        """
-        Expand geohash to include neighbors.
-        
-        Args:
-            hash_string: Center geohash
-            precision: New precision (default: current + 1)
-            
-        Returns:
-            List of geohash strings covering the area
-        """
-        pass  # TODO: Implement
-
-    def encode_dataframe(self, df: pd.DataFrame, lat_col: str, lng_col: str) -> pd.DataFrame:
+    def encode_dataframe(self, df: pd.DataFrame, lat_col: str, lon_col: str) -> pd.DataFrame:
         """
         Add geohash column to DataFrame.
         
         Args:
             df: Input DataFrame
             lat_col: Name of latitude column
-            lng_col: Name of longitude column
+            lon_col: Name of longitude column
             
         Returns:
             DataFrame with new 'geohash' column
         """
-        import pandas as pd
         result = df.copy()
         result['geohash'] = result.apply(
-            lambda row: self.encode(row[lat_col], row[lng_col]), 
+            lambda row: self.encode(row[lat_col], row[lon_col]), 
             axis=1
         )
         return result
@@ -117,7 +103,7 @@ class GeohashEncoder:
 
 def privacy_encode(
     lat: float, 
-    lng: float, 
+    lon: float, 
     precision: int = 6
 ) -> str:
     """
@@ -125,13 +111,13 @@ def privacy_encode(
     
     Args:
         lat: Latitude
-        lng: Longitude
+        lon: Longitude
         precision: Geohash precision (lower = more privacy)
         
     Returns:
         Geohash string
     """
-    return geohash.encode(lat, lng, precision=precision)
+    return geohash.encode(lat, lon, precision=precision)
 
 
 def calculate_k_anonymity(

@@ -1,0 +1,4 @@
+step,unchanged,removed,added,users_changed
+S0 -> S1,18405,1038,193,137
+S1 -> S2,18446,152,151,31
+S2 -> S3,18597,0,0,0
