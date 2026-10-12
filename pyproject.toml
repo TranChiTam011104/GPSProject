@@ -37,6 +37,8 @@ dev = [
     "mypy>=1.6.0",
     "ruff>=0.1.0",
     "nbclient>=0.10.0",   # scripts/run_notebooks.py: run notebooks and save outputs
+    "folium>=0.15.0",     # scripts/plot_user_places.py: home / office map
+    "matplotlib>=3.7.0",
 ]
 docs = [
     "mkdocs>=1.5.0",

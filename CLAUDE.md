@@ -46,6 +46,13 @@ python scripts/run_processing.py --no-stay-points       # clean points only, ski
 python -m gps.data.processing --data-dir data/raw       # same pipeline via the module CLI
 ```
 
+Home/office map of one user (review / reports; outputs under git-ignored `data/reports/user_{id}/`, needs `folium` + `matplotlib` from the dev extra):
+
+```bash
+python scripts/plot_user_places.py --candidates   # users with home + office found by v1 and v2
+python scripts/plot_user_places.py --user 068     # map.html (layers, street/satellite) + summary.json
+```
+
 Notebooks (EDA / evidence) — run with a real kernel and save outputs into the `.ipynb` (needs the `nbclient` dev extra; heavy steps are cached under `notebooks/outputs/<nb>/cache/`, so re-runs are fast):
 
 ```bash
