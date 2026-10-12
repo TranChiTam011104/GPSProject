@@ -23,10 +23,10 @@ class Location:
 
     ## Confidence definition (heuristic, NOT supervised probability)
 
-    ``confidence = winner_dwell_time / total_type_dwell_time``
+    ``confidence = winner_window_minutes / total_type_window_minutes``
 
-    - ``winner`` — the single (lat, lng) bucket that captured the most dwell
-      time (and visits) for this location type.
+    - ``winner`` — the stay-point (v1) that spent the most minutes inside the
+      daily window of this location type. POIs use plain dwell time.
     - ``type``   — one of ``"home" / "office" / "poi"``.
     - Clamped to ``[0, 1]``.
 

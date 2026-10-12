@@ -1,0 +1,3 @@
+daytype,users_with_night_place,users_with_day_place,night_place_majority,day_place_leads,day_place_max_share
+weekday,146,144,22-08 h,09-18 h,0.458
+weekend,146,144,23-10 h,none,0.22

@@ -94,11 +94,12 @@ class LocationOutput(BaseModel):
     The ``confidence`` field is a **heuristic** value in [0, 1] — NOT a
     supervised-learning probability. It is computed as:
 
-        confidence = winner_dwell_time / total_type_dwell_time
+        confidence = winner_window_minutes / total_type_window_minutes
 
-    where ``winner`` is the most-visited (or longest-dwell) stay-point
-    cluster for that location type and ``type`` is one of
-    ``"home" / "office" / "poi"``. The intuition: if a single location
+    where the minutes are the time stay-points spend inside the type's daily
+    window (local time), ``winner`` is the stay-point with the most such
+    minutes (v1 scores each stay-point on its own) and ``type`` is one of
+    ``"home" / "office" / "poi"``. POIs use plain dwell time. The intuition: if a single location
     captures most of the user's time inside the expected time-window
     (e.g. nights for home, work-hours for office) we are confident
     that this is *the* home/office.

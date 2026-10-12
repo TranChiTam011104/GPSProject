@@ -35,7 +35,7 @@ class ClusteringConfig(BaseModel):
 
 class ClassificationConfig(BaseModel):
     home_hour_start: int = 22
-    home_hour_end: int = 6
+    home_hour_end: int = 8
     office_hour_start: int = 9
     office_hour_end: int = 18
     work_days: tuple = (0, 1, 2, 3, 4)

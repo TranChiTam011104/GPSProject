@@ -65,7 +65,7 @@ def _create_classifier(version: Optional[str] = None) -> BaseClassifier:
     config = {
         "timezone": "Asia/Shanghai",
         "home_hour_start": 22,
-        "home_hour_end": 6,
+        "home_hour_end": 8,
         "office_hour_start": 9,
         "office_hour_end": 18,
         "work_days": [0, 1, 2, 3, 4],

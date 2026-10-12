@@ -180,33 +180,37 @@ ground-truth home/office labels, so we cannot train a calibrated classifier.
 Formula (computed per location type):
 
 ```
-confidence(winner) = winner_dwell_minutes / total_dwell_minutes_of_type
+confidence(winner) = winner_window_minutes / total_window_minutes_of_type
 ```
 
 Where:
 
-- `winner`           — the single (lat, lon) bucket that captured the most
-                        total dwell minutes (and visits) for this location
-                        type.
-- `total_dwell_minutes_of_type` — sum of dwell minutes across **all** of
-                        the user's stay-points classified as this type
-                        (`home` / `office` / `poi`).
+- `window minutes`  — minutes a stay-point spends inside the type's daily
+                        window in local time: `home` 22:00–08:00 every day,
+                        `office` 09:00–18:00 on Mon–Fri. A stay arriving at
+                        20:00 and staying the night counts as home.
+- `winner`          — the stay-point with the most window minutes (model v1
+                        scores each stay-point on its own; ties go to the
+                        longer, then the earlier stay).
+- `total_window_minutes_of_type` — sum of window minutes across **all** of
+                        the user's stay-points for this type. `poi` uses
+                        plain dwell minutes of stay-points outside both windows.
 - Result is clamped to `[0, 1]`.
 
 Worked example for the request above:
 
-| Stay-point | Hour | Class | Dwell (min) |
-|---|---|---|---|
-| 1 | 22:30 → 06:30 | home | 480 |
-| 2 | 09:15 → 18:15 | office | 540 |
+| Stay-point | Local time | Window minutes |
+|---|---|---|
+| 1 | 22:30 → 06:30 | home 480 |
+| 2 | 09:15 → 18:15 | office 540 (weekday) |
 
 - **home winner** is stay-point 1 → `confidence = 480 / 480 = 1.00`
 - **office winner** is stay-point 2 → `confidence = 540 / 540 = 1.00`
 
-If the user had **two** home-classified stay-points (one 480 min, one 100 min):
+If the user had **two** stay-points with home minutes (480 and 100):
 
-- `total_dwell = 580 min`
-- `winner_dwell = 480 min`
+- `total = 580 min`
+- `winner = 480 min`
 - `confidence = 480 / 580 ≈ 0.828`
 
 Use `confidence` as a **relative ranking signal** — it tells you which
@@ -218,7 +222,7 @@ candidate wins each type — not as an absolute probability.
 
 The server treats `arrival_time` / `departure_time` as **naive GMT** (the
 GeoLife convention) and converts tz-aware input to GMT. Before any hour-of-day rule,
-the classifier converts the arrival to **local time at the stay's location** (IANA time
+the classifier converts arrival and departure to **local time at the stay's location** (IANA time
 zone looked up from the coordinates, daylight saving included), the same rule the
 pipeline uses for `arrival_local`. Output timestamps (`first_seen`, `last_seen`) stay in GMT.
 

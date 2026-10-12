@@ -1,0 +1,8 @@
+type,rule,users_found,agree_with_core,users_with_core,median_confidence
+home,arrival 22-06,130,0.624,125,0.302
+home,"minutes in 22-06, per stay",163,0.662,148,0.176
+home,"minutes in 22-08, per stay",164,0.689,148,0.179
+home,"minutes in 22-08, 200 m area (v2-like)",164,0.892,148,0.689
+office,arrival 09-18,155,0.503,145,0.271
+office,"minutes in 09-18, per stay",159,0.664,149,0.213
+office,"minutes in 09-18, 200 m area (v2-like)",159,0.839,149,0.628
