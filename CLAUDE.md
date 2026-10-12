@@ -34,7 +34,7 @@ uvicorn gps.api.main:app --reload --host 0.0.0.0 --port 8000   # run API locally
 # API docs: http://localhost:8000/docs (Swagger), /redoc, /openapi.json
 ```
 
-The `Makefile` targets (`make test`, `make lint`, `make format`, `make run`, `make docker-build`, ...) reference `src/api/main.py`, which is stale — the real app is `src/gps/api/main.py`. Prefer the direct commands above; adjust the Makefile if you touch it.
+The `Makefile` targets (`make test`, `make lint`, `make format`, `make run`, `make openapi`, `make docker-build`, ...) wrap the same commands; `make openapi` regenerates `configs/openapi.yaml` from the app (`scripts/export_openapi.py`).
 
 Data processing pipeline (GeoLife raw `.plt` → cleaned Parquet):
 
@@ -120,7 +120,7 @@ FastAPI app factory (`create_app()`) — module-level `app` object for `uvicorn 
 
 ### Config (`src/gps/config/settings.py`)
 
-Layered Pydantic Settings: module defaults → `configs/{GPS_ENV}.yaml` (default `configs/dev.yaml`) → `GPS_`-prefixed env vars → `.env`. `get_settings()` is `lru_cache`d — restart the process (or clear the cache) to pick up config changes in tests. Flat fields are named `GPS_*` and read from the env var of the same name (no `env_prefix`). Nested blocks (`stay_point`, `clustering`, `classification`, `api`) only load from YAML, not flat env vars. `api/dependencies.py` builds the classifier from `settings.classification` (+ `settings.clustering` for v2) and takes the default version from `GPS_MODEL_VERSION`; `prod.yaml` carries the same evidenced thresholds as `dev.yaml` (only serving settings differ). `configs/model_v1.yaml` / `model_v2.yaml` are unused and stale.
+Layered Pydantic Settings: module defaults → `configs/{GPS_ENV}.yaml` (default `configs/dev.yaml`) → `GPS_`-prefixed env vars → `.env`. `get_settings()` is `lru_cache`d — restart the process (or clear the cache) to pick up config changes in tests. Flat fields are named `GPS_*` and read from the env var of the same name (no `env_prefix`). Nested blocks (`stay_point`, `clustering`, `classification`, `api`) only load from YAML, not flat env vars. `api/dependencies.py` builds the classifier from `settings.classification` (+ `settings.clustering` for v2) and takes the default version from `GPS_MODEL_VERSION`; `prod.yaml` carries the same evidenced thresholds as `dev.yaml` (only serving settings differ).
 
 ### Privacy (`src/gps/privacy/anonymizer.py`)
 
