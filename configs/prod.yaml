@@ -1,13 +1,13 @@
 # Production configuration — read when GPS_ENV=prod (Cloud Run / ECS / k8s).
-# Intentionally tighter thresholds + WARNING log level.
+# Same evidenced thresholds as dev (notebooks 07, 12, 13); only serving settings differ.
 
 stay_point:
-  time_threshold_minutes: 20
-  distance_threshold_meters: 250
+  time_threshold_minutes: 30
+  distance_threshold_meters: 200
 
 clustering:
-  eps_meters: 150.0
-  min_samples: 5
+  eps_meters: 100.0
+  min_samples: 3
 
 classification:
   home_hour_start: 22
@@ -18,7 +18,7 @@ classification:
   min_window_minutes: 240.0
   min_support: 2
   support_radius_m: 200.0
-  min_duration_minutes: 45.0
+  min_duration_minutes: 30.0
   top_poi_n: 5
   geohash_precision: 6
 

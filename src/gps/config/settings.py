@@ -88,8 +88,8 @@ class Settings(BaseSettings):
     classification: ClassificationConfig = Field(default_factory=ClassificationConfig)
     api: APIConfig = Field(default_factory=APIConfig)
 
+    # No env_prefix: the field names already carry ``GPS_`` (a prefix would read GPS_GPS_*).
     model_config = SettingsConfigDict(
-        env_prefix="GPS_",
         env_file=".env",
         env_file_encoding="utf-8",
         case_sensitive=False,

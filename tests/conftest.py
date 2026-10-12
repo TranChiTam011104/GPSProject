@@ -67,7 +67,6 @@ def mock_user_id():
 def model_config():
     """Default model configuration."""
     return {
-        "timezone": "Asia/Shanghai",
         "home_hour_start": 22,
         "home_hour_end": 8,
         "office_hour_start": 9,

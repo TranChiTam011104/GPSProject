@@ -117,7 +117,7 @@ FastAPI app factory (`create_app()`) — module-level `app` object for `uvicorn 
 
 ### Config (`src/gps/config/settings.py`)
 
-Layered Pydantic Settings: module defaults → `configs/{GPS_ENV}.yaml` (default `configs/dev.yaml`) → `GPS_`-prefixed env vars → `.env`. `get_settings()` is `lru_cache`d — restart the process (or clear the cache) to pick up config changes in tests. Nested blocks (`stay_point`, `clustering`, `classification`, `api`) only load from YAML, not flat env vars.
+Layered Pydantic Settings: module defaults → `configs/{GPS_ENV}.yaml` (default `configs/dev.yaml`) → `GPS_`-prefixed env vars → `.env`. `get_settings()` is `lru_cache`d — restart the process (or clear the cache) to pick up config changes in tests. Flat fields are named `GPS_*` and read from the env var of the same name (no `env_prefix`). Nested blocks (`stay_point`, `clustering`, `classification`, `api`) only load from YAML, not flat env vars. `api/dependencies.py` builds the classifier from `settings.classification` (+ `settings.clustering` for v2) and takes the default version from `GPS_MODEL_VERSION`; `prod.yaml` carries the same evidenced thresholds as `dev.yaml` (only serving settings differ). `configs/model_v1.yaml` / `model_v2.yaml` are unused and stale.
 
 ### Privacy (`src/gps/privacy/anonymizer.py`)
 
