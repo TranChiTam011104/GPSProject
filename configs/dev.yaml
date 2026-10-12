@@ -5,9 +5,10 @@ stay_point:
   time_threshold_minutes: 30
   distance_threshold_meters: 200
 
-clustering:
-  eps_meters: 100.0
-  min_samples: 3
+clustering:                     # v2 places, notebooks/14_place_clustering.ipynb
+  eps_meters: 150.0
+  min_samples: 2
+  min_window_days: 2
 
 classification:
   home_hour_start: 22

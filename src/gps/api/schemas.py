@@ -163,15 +163,17 @@ class PlaceStatusOutput(BaseModel):
     reason: Literal["no_candidate", "too_few_window_minutes", "one_off_place"] | None = Field(
         default=None,
         description="Why the answer is unknown: no stay-point has any minute in the window; the best "
-                    "stay has fewer than 240 minutes in the window; or it is a one-off (no other "
-                    "stay-point with window minutes within 200 m). Null when found.",
+                    "candidate has fewer than 240 minutes in the window; or it is a one-off (v1: no other "
+                    "stay-point with window minutes within 200 m; v2: window minutes on a single day). "
+                    "Null when found.",
     )
     window_minutes: float | None = Field(
         default=None, description="Minutes of the best candidate inside the window; null without candidates")
     support: int | None = Field(
         default=None,
-        description="Candidates within 200 m of the best one, itself included (how many times the user "
-                    "was at that place inside the window); null without candidates",
+        description="How many times the user was at the best candidate's place inside the window "
+                    "(v1: stay-points within 200 m of it, itself included; v2: distinct days with window "
+                    "minutes at the place); null without candidates",
     )
 
 

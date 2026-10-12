@@ -29,8 +29,11 @@ class StayPointConfig(BaseModel):
 
 
 class ClusteringConfig(BaseModel):
-    eps_meters: float = 100.0
-    min_samples: int = 3
+    """v2 place grouping and its "unknown" rule (notebooks/14_place_clustering.ipynb)."""
+
+    eps_meters: float = 150.0
+    min_samples: int = 2
+    min_window_days: int = 2
 
 
 class ClassificationConfig(BaseModel):

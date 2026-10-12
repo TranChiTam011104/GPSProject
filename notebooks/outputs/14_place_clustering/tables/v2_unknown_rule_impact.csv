@@ -1,0 +1,15 @@
+type,unknown_rule,users,answered,unknown
+home,no candidate (no gate),174,164,10
+home,place < 240 window minutes,174,138,36
+home,place on < 2 days,174,115,59
+home,place on < 3 days,174,104,70
+home,< 240 min or < 2 days,174,114,60
+home,< 240 min or < 3 days,174,104,70
+office,no candidate (no gate),174,159,15
+office,place < 240 window minutes,174,132,42
+office,place on < 2 days,174,108,66
+office,place on < 3 days,174,94,80
+office,< 240 min or < 2 days,174,108,66
+office,< 240 min or < 3 days,174,94,80
+home,"v1 in src/ (notebook 13, for comparison)",174,104,70
+office,"v1 in src/ (notebook 13, for comparison)",174,100,74

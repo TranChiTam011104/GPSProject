@@ -22,6 +22,15 @@ versions will be added without breaking v1 clients.
 Deprecated versions are announced via the `Sunset` response header (see
 :mod:`gps.api.versioned`).
 
+The URL version is the version of the **contract**. The **model** behind it is chosen by
+`GPS_MODEL_VERSION` and reported in each response's `model_version`; both models return the
+same schema:
+
+| `GPS_MODEL_VERSION` | `model_version` | What is scored |
+|---|---|---|
+| `v1` (default) | `v1-heuristic` | each stay-point on its own (`notebooks/12`, `13`) |
+| `v2` | `v2-cluster-dbscan` | places: stay-points grouped by DBSCAN (`eps` 150 m, `min_samples` 2), scored by the window minutes of all their stays (`notebooks/14_place_clustering.ipynb`) |
+
 ---
 
 ## Authentication / Authorisation
@@ -146,9 +155,9 @@ thresholds are validated.
 | Field | Meaning |
 |---|---|
 | `status` | `found` (the location is given) or `unknown` (the location is `null`) |
-| `reason` | `null` when found. Otherwise `no_candidate` (no stay-point has any minute inside the window), `too_few_window_minutes` (the best stay has fewer than 240 minutes inside the window) or `one_off_place` (no other stay-point with window minutes lies within 200 m of the best one) |
-| `window_minutes` | Minutes of the best candidate inside the window; `null` without candidates |
-| `support` | Candidates within 200 m of the best one, itself included: how many times the user was at that place inside the window; `null` without candidates |
+| `reason` | `null` when found. Otherwise `no_candidate` (no stay-point has any minute inside the window), `too_few_window_minutes` (the best candidate has fewer than 240 minutes inside the window) or `one_off_place` (v1: no other stay-point with window minutes lies within 200 m of the best one; v2: the best place has window minutes on a single day) |
+| `window_minutes` | Minutes of the best candidate (v1: a stay-point; v2: all stays of a place) inside the window; `null` without candidates |
+| `support` | How many times the user was at that place inside the window. v1: stay-points within 200 m of the best one, itself included; v2: distinct days (nights for home) with window minutes at the place. `null` without candidates |
 
 Evidence: `notebooks/13_minimum_evidence.ipynb` split each user's data in two halves and
 ran v1 on each. Below these two minimums the two halves agree no more often than random
@@ -159,6 +168,12 @@ office) is a valid result. Applied to the 174 users that have stay-points, home 
 
 The single `confidence` score does **not** replace these fields: in the same experiment a
 higher v1 confidence did not mean a more repeatable answer.
+
+**v2** (`notebooks/14_place_clustering.ipynb`) uses the same 240-minute minimum and counts
+**days** instead of nearby stays: a place seen on one day only repeats on the other half about
+as often as a random candidate (34% / 36% vs 20%), from 5 days on it repeats 80–100% of the
+time. v2 answers home for 114 users and office for 108, and its answers repeat more often than
+v1's (62% / 62% vs 41% / 42%).
 
 #### Errors
 

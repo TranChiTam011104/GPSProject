@@ -180,3 +180,17 @@ class TestUnknown:
         assert result.home_status.status == "found"
         assert result.office_status.reason == "one_off_place"
         assert result.office is None
+
+
+class TestWindowDays:
+    """Days with window minutes, used by v2 to count how often a place is visited."""
+
+    def test_night_belongs_to_the_day_it_opens(self):
+        # Wednesday 23:00 -> Thursday 07:00 is the night of Wednesday only.
+        home_days, office_days = HeuristicClassifier().window_days(datetime(2008, 10, 22, 23), datetime(2008, 10, 23, 7))
+        assert home_days == {datetime(2008, 10, 22).date()}
+        assert office_days == set()
+
+    def test_early_morning_belongs_to_the_previous_night(self):
+        home_days, _ = HeuristicClassifier().window_days(datetime(2008, 10, 23, 2), datetime(2008, 10, 23, 6))
+        assert home_days == {datetime(2008, 10, 22).date()}

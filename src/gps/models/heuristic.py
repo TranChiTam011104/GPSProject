@@ -97,14 +97,27 @@ class HeuristicClassifier(BaseClassifier):
     def window_minutes(self, local_arrival: datetime, local_departure: datetime) -> tuple[float, float]:
         """(home, office) minutes of a stay inside the daily windows, in local wall-clock time."""
         home = office = 0.0
+        for _, h, o in self._daily_overlaps(local_arrival, local_departure):
+            home += h
+            office += o
+        return home, office
+
+    def window_days(self, local_arrival: datetime, local_departure: datetime) -> tuple[set, set]:
+        """(home, office) days whose window the stay touches; a night belongs to the day it opens."""
+        overlaps = list(self._daily_overlaps(local_arrival, local_departure))
+        return {d for d, h, _ in overlaps if h > 0}, {d for d, _, o in overlaps if o > 0}
+
+    def _daily_overlaps(self, local_arrival: datetime, local_departure: datetime):
+        """(day, home minutes, office minutes) for each day whose windows may overlap the stay."""
         day = datetime.combine(local_arrival.date() - _DAY, datetime.min.time())
         while day <= local_departure:
-            home += _overlap_minutes(local_arrival, local_departure, day, self.home_hour_start, self.home_hour_end)
+            home = _overlap_minutes(local_arrival, local_departure, day, self.home_hour_start, self.home_hour_end)
+            office = 0.0
             if day.weekday() in self.work_days:
-                office += _overlap_minutes(local_arrival, local_departure, day, self.office_hour_start,
-                                           self.office_hour_end)
+                office = _overlap_minutes(local_arrival, local_departure, day, self.office_hour_start,
+                                          self.office_hour_end)
+            yield day.date(), home, office
             day += _DAY
-        return home, office
 
     # ── Internals ────────────────────────────────────────────────────────────
 

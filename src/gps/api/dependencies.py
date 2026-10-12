@@ -62,10 +62,7 @@ def _create_classifier(version: str) -> BaseClassifier:
     config = settings.classification.model_dump()
 
     if version == "v2":
-        config.update({
-            "eps_meters": settings.clustering.eps_meters,
-            "min_samples": settings.clustering.min_samples,
-        })
+        config.update(settings.clustering.model_dump())
         return ClusterClassifier(config)
     return HeuristicClassifier(config)
 

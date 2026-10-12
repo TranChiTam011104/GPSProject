@@ -25,8 +25,8 @@ class Location:
 
     ``confidence = winner_window_minutes / total_type_window_minutes``
 
-    - ``winner`` — the stay-point (v1) that spent the most minutes inside the
-      daily window of this location type. POIs use plain dwell time.
+    - ``winner`` — the stay-point (v1) or the DBSCAN place (v2) that spent the most
+      minutes inside the daily window of this location type. POIs use plain dwell time.
     - ``type``   — one of ``"home" / "office" / "poi"``.
     - Clamped to ``[0, 1]``.
 
@@ -66,13 +66,15 @@ class PlaceStatus:
     ``status`` is ``"found"`` or ``"unknown"``. When unknown, ``reason`` is one of
     ``"no_candidate"`` (no stay-point has any minute in the window),
     ``"too_few_window_minutes"`` or ``"one_off_place"`` (see
-    notebooks/13_minimum_evidence.ipynb: below these, a v1 answer repeats on another
-    half of the user's data no better than a random candidate).
+    notebooks/13_minimum_evidence.ipynb for v1 and 14_place_clustering.ipynb for v2: below
+    these, an answer repeats on another half of the user's data no better than a random
+    candidate).
 
     The evidence is that of the best candidate and is kept when unknown, so callers
-    can judge it themselves: ``window_minutes`` = its minutes inside the window,
-    ``support`` = candidates within ``support_radius_m`` of it, itself included (how
-    many times the user was at that place inside the window).
+    can judge it themselves: ``window_minutes`` = its minutes inside the window, and
+    ``support`` = how many times the user was at that place inside the window. v1 counts
+    candidate stays within ``support_radius_m`` of the winning stay, itself included; v2
+    counts distinct days (nights for home) with window minutes at the winning place.
     """
 
     status: str = "unknown"
