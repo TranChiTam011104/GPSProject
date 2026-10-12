@@ -15,7 +15,12 @@ Algorithm (per Checkpoint 1 / Tuần 1; evidence in notebooks/12_home_office_tim
    (full nights tie often) go to the longer stay, then to the earlier arrival.
 5. Stays are scored one by one, with no merging of nearby stays (v2 does that with DBSCAN).
 6. Confidence = winner's window minutes / all stays' window minutes of that type.
-7. POIs are the stays that touch neither window, grouped by geohash.
+7. A winner is reported as found only when it has at least ``min_window_minutes`` inside
+   the window and at least ``min_support`` candidates (itself included) within
+   ``support_radius_m``; otherwise the type is "unknown" with a reason
+   (notebooks/13_minimum_evidence.ipynb). Counting nearby candidates does not merge
+   stays or change the winner.
+8. POIs are the stays that touch neither window, grouped by geohash.
 """
 
 from __future__ import annotations
@@ -30,8 +35,10 @@ from gps.models.base import (
     BaseClassifier,
     ClassificationResult,
     Location,
+    PlaceStatus,
     coerce_stay_points,
 )
+from gps.utils.geo import haversine_meters
 
 _DAY = timedelta(days=1)
 
@@ -52,6 +59,9 @@ class HeuristicClassifier(BaseClassifier):
         self.min_duration_minutes: float = float(self.config.get("min_duration_minutes", 30.0))
         self.geohash_precision: int = int(self.config.get("geohash_precision", 6))
         self.top_poi_n: int = int(self.config.get("top_poi_n", 5))
+        self.min_window_minutes: float = float(self.config.get("min_window_minutes", 240.0))
+        self.min_support: int = int(self.config.get("min_support", 2))
+        self.support_radius_m: float = float(self.config.get("support_radius_m", 200.0))
 
     # ── Public API ───────────────────────────────────────────────────────────
 
@@ -68,8 +78,8 @@ class HeuristicClassifier(BaseClassifier):
         # because the API shares one classifier between requests.
         scored = [(sp, *self.window_minutes(arr, dep)) for sp, arr, dep in zip(sps, arrivals, departures, strict=True)]
 
-        home = self._pick_winner(scored, "home", 1)
-        office = self._pick_winner(scored, "office", 2)
+        home, home_status = self._pick_winner(scored, "home", 1)
+        office, office_status = self._pick_winner(scored, "office", 2)
         pois = self._pick_top_pois([sp for sp, home_min, office_min in scored if home_min == 0 and office_min == 0])
 
         all_locs = [loc for loc in (home, office) if loc] + pois
@@ -78,6 +88,8 @@ class HeuristicClassifier(BaseClassifier):
             locations=all_locs,
             home=home,
             office=office,
+            home_status=home_status,
+            office_status=office_status,
             pois=pois,
             model_version=self.model_version,
         )
@@ -96,14 +108,20 @@ class HeuristicClassifier(BaseClassifier):
 
     # ── Internals ────────────────────────────────────────────────────────────
 
-    def _pick_winner(self, scored, label: str, column: int) -> Location | None:
+    def _pick_winner(self, scored, label: str, column: int) -> tuple[Location | None, PlaceStatus]:
         """``column`` is the position of the type's minutes after the stay (1 = home, 2 = office)."""
         candidates = [(row[0], row[column]) for row in scored if row[column] > 0]
         if not candidates:
-            return None
+            return None, PlaceStatus()
         total = sum(minutes for _, minutes in candidates)
         sp, minutes = max(candidates, key=lambda c: (c[1], c[0].duration_minutes, -c[0].arrival_time.timestamp()))
-        return Location(
+        support = sum(1 for other, _ in candidates
+                      if haversine_meters(sp.lat, sp.lon, other.lat, other.lon) <= self.support_radius_m)
+        if minutes < self.min_window_minutes:
+            return None, PlaceStatus("unknown", "too_few_window_minutes", minutes, support)
+        if support < self.min_support:
+            return None, PlaceStatus("unknown", "one_off_place", minutes, support)
+        location = Location(
             lat=sp.lat,
             lon=sp.lon,
             location_type=label,
@@ -115,6 +133,7 @@ class HeuristicClassifier(BaseClassifier):
             last_seen=sp.arrival_time,
             geohash=geohash_encode(sp.lat, sp.lon, precision=self.geohash_precision),
         )
+        return location, PlaceStatus("found", None, minutes, support)
 
     def _pick_top_pois(self, sps) -> list[Location]:
         agg: dict[str, dict] = {}

@@ -79,19 +79,11 @@ Content-Type: application/json
 
 {
   "stay_points": [
-    {
-      "lat": 39.9847,
-      "lon": 116.3184,
-      "arrival_time":   "2008-10-23T14:30:00",
-      "departure_time": "2008-10-23T22:30:00",
-      "observed_minutes": 412.5
-    },
-    {
-      "lat": 40.1234,
-      "lon": 116.5678,
-      "arrival_time":   "2008-10-24T01:15:00",
-      "departure_time": "2008-10-24T10:15:00"
-    }
+    { "lat": 39.9847, "lon": 116.3184, "arrival_time": "2008-10-22T14:30:00", "departure_time": "2008-10-22T22:30:00" },
+    { "lat": 39.9847, "lon": 116.3184, "arrival_time": "2008-10-23T14:30:00", "departure_time": "2008-10-23T22:30:00",
+      "observed_minutes": 412.5 },
+    { "lat": 40.1234, "lon": 116.5678, "arrival_time": "2008-10-23T01:00:00", "departure_time": "2008-10-23T10:00:00" },
+    { "lat": 40.1234, "lon": 116.5678, "arrival_time": "2008-10-24T01:00:00", "departure_time": "2008-10-24T10:00:00" }
   ]
 }
 ```
@@ -136,13 +128,37 @@ thresholds are validated.
       "geohash": "wx4uk8"
     }
   ],
-  "home":   { "lat": 39.9847, "lon": 116.3184, "location_type": "home",   "confidence": 1.0,   "visit_count": 2, "duration_minutes": 960.0, "geohash": "wx4eqy" },
-  "office": { "lat": 40.1234, "lon": 116.5678, "location_type": "office", "confidence": 0.857, "visit_count": 1, "duration_minutes": 540.0, "geohash": "wx4uk8" },
+  "home":   { "lat": 39.9847, "lon": 116.3184, "location_type": "home",   "confidence": 0.5, "visit_count": 1, "duration_minutes": 480.0, "geohash": "wx4eqy" },
+  "office": { "lat": 40.1234, "lon": 116.5678, "location_type": "office", "confidence": 0.5, "visit_count": 1, "duration_minutes": 540.0, "geohash": "wx4uk8" },
+  "home_status":   { "status": "found", "reason": null, "window_minutes": 480.0, "support": 2 },
+  "office_status": { "status": "found", "reason": null, "window_minutes": 540.0, "support": 2 },
   "pois":   [],
   "model_version": "v1-heuristic",
   "processed_at": "2026-09-22T10:30:00Z"
 }
 ```
+
+#### Unknown home / office
+
+`home` and `office` are decided **separately**, and each is `null` when it is unknown;
+`home_status` / `office_status` say why and keep the evidence:
+
+| Field | Meaning |
+|---|---|
+| `status` | `found` (the location is given) or `unknown` (the location is `null`) |
+| `reason` | `null` when found. Otherwise `no_candidate` (no stay-point has any minute inside the window), `too_few_window_minutes` (the best stay has fewer than 240 minutes inside the window) or `one_off_place` (no other stay-point with window minutes lies within 200 m of the best one) |
+| `window_minutes` | Minutes of the best candidate inside the window; `null` without candidates |
+| `support` | Candidates within 200 m of the best one, itself included: how many times the user was at that place inside the window; `null` without candidates |
+
+Evidence: `notebooks/13_minimum_evidence.ipynb` split each user's data in two halves and
+ran v1 on each. Below these two minimums the two halves agree no more often than random
+candidates do (home 15–19% vs 11–21%; one-off winners 19–24% vs 17–21%), and more data does
+not help because full nights tie. A user is never dropped: a user with only a home (or only an
+office) is a valid result. Applied to the 174 users that have stay-points, home is answered for
+104 and office for 100 (164 / 159 without these two minimums).
+
+The single `confidence` score does **not** replace these fields: in the same experiment a
+higher v1 confidence did not mean a more repeatable answer.
 
 #### Errors
 
@@ -206,6 +222,9 @@ Worked example for the request above:
 
 - **home winner** is stay-point 1 → `confidence = 480 / 480 = 1.00`
 - **office winner** is stay-point 2 → `confidence = 540 / 540 = 1.00`
+
+(Each is reported as `found` only when the place repeats — see *Unknown home / office*;
+a single stay-point per type, as here, would be a `one_off_place`.)
 
 If the user had **two** stay-points with home minutes (480 and 100):
 

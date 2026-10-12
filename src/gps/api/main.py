@@ -17,6 +17,7 @@ import logging
 import os
 import time
 from contextlib import asynccontextmanager
+from dataclasses import asdict
 from typing import Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Request
@@ -186,6 +187,8 @@ def register_routes(app: FastAPI) -> None:
                 locations=[_to_dict(loc) for loc in result.locations],
                 home=_to_dict(result.home) if result.home else None,
                 office=_to_dict(result.office) if result.office else None,
+                home_status=asdict(result.home_status),
+                office_status=asdict(result.office_status),
                 pois=[_to_dict(loc) for loc in result.pois],
                 model_version=classifier.get_model_version(),
                 processed_at=result.processed_at,

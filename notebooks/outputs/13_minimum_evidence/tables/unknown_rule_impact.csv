@@ -1,0 +1,9 @@
+type,unknown_rule,users,answered,unknown,area200_support_3plus
+home,no candidate (current behaviour),174,164,10,0
+home,winner < 240 window minutes,174,132,42,5
+home,winner is a one-off (support 1),174,113,61,7
+home,either of the two,174,104,70,11
+office,no candidate (current behaviour),174,159,15,0
+office,winner < 240 window minutes,174,126,48,6
+office,winner is a one-off (support 1),174,106,68,13
+office,either of the two,174,100,74,17

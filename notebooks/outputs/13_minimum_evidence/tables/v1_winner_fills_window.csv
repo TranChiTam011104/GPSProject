@@ -1,0 +1,7 @@
+type,winner_fills,users,median_tied_at_top,share_tied,share_one_off,share_same_as_area200
+home,exactly one full window,94,3.0,0.798,0.223,0.7446808510638298
+home,less than one full window,63,1.0,0.016,0.46,0.9365079365079365
+home,more than one window,7,1.0,0.0,0.143,0.14285714285714285
+office,exactly one full window,52,2.0,0.654,0.154,0.6346153846153846
+office,less than one full window,101,1.0,0.0,0.436,0.8415841584158416
+office,more than one window,6,1.0,0.0,0.167,0.6666666666666666

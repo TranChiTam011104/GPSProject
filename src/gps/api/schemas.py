@@ -155,6 +155,26 @@ class LocationOutput(BaseModel):
     )
 
 
+class PlaceStatusOutput(BaseModel):
+    """Whether home / office was answered, and the evidence behind the answer."""
+
+    status: Literal["found", "unknown"] = Field(
+        ..., description="found: the location is given; unknown: it is null")
+    reason: Literal["no_candidate", "too_few_window_minutes", "one_off_place"] | None = Field(
+        default=None,
+        description="Why the answer is unknown: no stay-point has any minute in the window; the best "
+                    "stay has fewer than 240 minutes in the window; or it is a one-off (no other "
+                    "stay-point with window minutes within 200 m). Null when found.",
+    )
+    window_minutes: float | None = Field(
+        default=None, description="Minutes of the best candidate inside the window; null without candidates")
+    support: int | None = Field(
+        default=None,
+        description="Candidates within 200 m of the best one, itself included (how many times the user "
+                    "was at that place inside the window); null without candidates",
+    )
+
+
 class ClassificationResponse(BaseModel):
     """Response schema for classification endpoint."""
     user_id: str = Field(..., description="User identifier")
@@ -170,6 +190,8 @@ class ClassificationResponse(BaseModel):
         default=None,
         description="Inferred office location"
     )
+    home_status: PlaceStatusOutput = Field(..., description="Status and evidence of the home answer")
+    office_status: PlaceStatusOutput = Field(..., description="Status and evidence of the office answer")
     pois: list[LocationOutput] = Field(
         default_factory=list,
         description="Points of Interest"

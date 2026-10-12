@@ -39,7 +39,9 @@ class ClassificationConfig(BaseModel):
     office_hour_start: int = 9
     office_hour_end: int = 18
     work_days: tuple = (0, 1, 2, 3, 4)
-    min_confidence: float = 0.3
+    min_window_minutes: float = 240.0
+    min_support: int = 2
+    support_radius_m: float = 200.0
     min_duration_minutes: float = 30.0
     top_poi_n: int = 5
     geohash_precision: int = 6

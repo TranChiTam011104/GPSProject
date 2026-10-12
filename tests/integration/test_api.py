@@ -33,17 +33,32 @@ class TestAPI:
 
     def test_classify_accepts_pipeline_shaped_stay_points(self):
         response = self.classify([
-            stay(HOME, "2008-10-23T14:30:00", "2008-10-23T22:45:00", observed_minutes=480.0, altitude_m=50.0),
+            stay(HOME, "2008-10-22T14:30:00", "2008-10-22T22:45:00", observed_minutes=480.0, altitude_m=50.0),
+            stay(HOME, "2008-10-23T14:30:00", "2008-10-23T22:45:00"),
+            stay(OFFICE, "2008-10-23T01:00:00", "2008-10-23T10:30:00"),
             stay(OFFICE, "2008-10-24T01:00:00", "2008-10-24T10:30:00"),
         ])
         assert response.status_code == 200
         body = response.json()
         assert body["user_id"] == "010"
-        assert body["locations"]
+        assert body["home"]["location_type"] == "home"
+        assert body["office"]["location_type"] == "office"
+        assert body["home_status"]["status"] == "found"
+        assert body["home_status"]["support"] == 2
+        assert body["office_status"]["reason"] is None
+
+    def test_one_off_stay_is_unknown_with_reason_and_evidence(self):
+        body = self.classify([stay(HOME, "2008-10-23T14:30:00", "2008-10-23T22:45:00")]).json()
+        assert body["home"] is None
+        assert body["home_status"] == {"status": "unknown", "reason": "one_off_place",
+                                       "window_minutes": 495.0, "support": 1}
+        assert body["office_status"]["reason"] == "no_candidate"
 
     def test_tz_aware_and_gmt_requests_give_the_same_answer(self):
-        gmt = self.classify([stay(HOME, "2008-10-23T14:30:00", "2008-10-23T22:45:00")]).json()
-        local = self.classify([stay(HOME, "2008-10-23T22:30:00+08:00", "2008-10-24T06:45:00+08:00")]).json()
+        gmt = self.classify([stay(HOME, f"2008-10-{d}T14:30:00", f"2008-10-{d}T22:45:00") for d in (22, 23)]).json()
+        local = self.classify([stay(HOME, f"2008-10-{d}T22:30:00+08:00", f"2008-10-{d + 1}T06:45:00+08:00")
+                               for d in (22, 23)]).json()
+        assert gmt["locations"]
         assert gmt["locations"] == local["locations"]
 
     @pytest.mark.parametrize("stay_points", [

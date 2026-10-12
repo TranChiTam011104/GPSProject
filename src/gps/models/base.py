@@ -60,13 +60,40 @@ class Location:
 
 
 @dataclass
+class PlaceStatus:
+    """Whether a home / office answer was given, and the evidence behind it.
+
+    ``status`` is ``"found"`` or ``"unknown"``. When unknown, ``reason`` is one of
+    ``"no_candidate"`` (no stay-point has any minute in the window),
+    ``"too_few_window_minutes"`` or ``"one_off_place"`` (see
+    notebooks/13_minimum_evidence.ipynb: below these, a v1 answer repeats on another
+    half of the user's data no better than a random candidate).
+
+    The evidence is that of the best candidate and is kept when unknown, so callers
+    can judge it themselves: ``window_minutes`` = its minutes inside the window,
+    ``support`` = candidates within ``support_radius_m`` of it, itself included (how
+    many times the user was at that place inside the window).
+    """
+
+    status: str = "unknown"
+    reason: str | None = "no_candidate"
+    window_minutes: float | None = None
+    support: int | None = None
+
+
+@dataclass
 class ClassificationResult:
-    """Result of classifying one user."""
+    """Result of classifying one user.
+
+    ``home`` / ``office`` are ``None`` exactly when the matching status is unknown.
+    """
 
     user_id: str
     locations: list[Location] = field(default_factory=list)
     home: Location | None = None
     office: Location | None = None
+    home_status: PlaceStatus = field(default_factory=PlaceStatus)
+    office_status: PlaceStatus = field(default_factory=PlaceStatus)
     pois: list[Location] = field(default_factory=list)
     model_version: str = "unknown"
     processed_at: datetime = field(default_factory=datetime.now)
@@ -77,6 +104,8 @@ class ClassificationResult:
             "locations": [loc.to_dict() for loc in self.locations],
             "home": self.home.to_dict() if self.home else None,
             "office": self.office.to_dict() if self.office else None,
+            "home_status": asdict(self.home_status),
+            "office_status": asdict(self.office_status),
             "pois": [loc.to_dict() for loc in self.pois],
             "model_version": self.model_version,
             "processed_at": self.processed_at.isoformat(),

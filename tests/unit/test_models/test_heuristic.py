@@ -41,20 +41,23 @@ class TestLocalTime:
 
     def test_beijing_night_is_home_not_office(self):
         # 2008-10-22 is a Wednesday. 14:30 GMT = 22:30 in Beijing: at home, not at work.
-        result = HeuristicClassifier().predict([self._stay(39.9847, 116.3184, datetime(2008, 10, 22, 14, 30), 8)])
+        # Two nights at the same place, so the answer is not a one-off.
+        nights = [self._stay(39.9847, 116.3184, datetime(2008, 10, d, 14, 30), 8) for d in (22, 23)]
+        result = HeuristicClassifier().predict(nights)
         assert result.home is not None
         assert result.office is None
 
     def test_beijing_office_hours_in_gmt_morning(self):
         # 01:00 GMT Wednesday = 09:00 in Beijing.
-        result = HeuristicClassifier().predict([self._stay(40.0043, 116.3263, datetime(2008, 10, 22, 1, 0), 9)])
+        days = [self._stay(40.0043, 116.3263, datetime(2008, 10, d, 1, 0), 9) for d in (22, 23)]
+        result = HeuristicClassifier().predict(days)
         assert result.office is not None
         assert result.home is None
 
     def test_seattle_uses_its_own_time_zone(self):
         # 06:00 GMT = 23:00 in Seattle (summer time, GMT-7).
-        result = HeuristicClassifier().predict([self._stay(47.6062, -122.3321, datetime(2008, 7, 2, 6, 0), 8)])
-        assert result.home is not None
+        nights = [self._stay(47.6062, -122.3321, datetime(2008, 7, d, 6, 0), 8) for d in (2, 3)]
+        assert HeuristicClassifier().predict(nights).home is not None
 
 
 class TestWindowMinutes:
@@ -91,24 +94,29 @@ class TestWinner:
         return {"lat": lat, "lon": lon, "arrival_time": arrival, "departure_time": arrival + timedelta(hours=hours)}
 
     def test_stay_arriving_before_22_is_home(self):
-        # The arrival-hour rule used to miss this one: arrival 20:00 is outside 22-08.
-        result = HeuristicClassifier().predict([self._stay(39.98, 116.31, datetime(2008, 10, 22, 20, 0), 11)])
+        # The arrival-hour rule used to miss these: arrival 20:00 is outside 22-08.
+        nights = [self._stay(39.98, 116.31, datetime(2008, 10, d, 20, 0), 11) for d in (22, 23)]
+        result = HeuristicClassifier().predict(nights)
         assert result.home is not None
-        assert result.home.confidence == 1.0
+        assert result.home.confidence == 0.5          # two equal nights: 600 of 1200 window minutes
 
     def test_most_minutes_in_window_wins(self):
-        short = self._stay(39.98, 116.31, datetime(2008, 10, 22, 23, 0), 2)        # 2 h in window
-        long = self._stay(39.90, 116.40, datetime(2008, 10, 23, 22, 0), 9)         # 9 h in window
-        result = HeuristicClassifier().predict([short, long])
+        # The winner has to repeat inside the window, so each place is visited twice.
+        short = [self._stay(39.98, 116.31, datetime(2008, 10, d, 23, 0), 5) for d in (22, 24)]   # 5 h in window
+        long = [self._stay(39.90, 116.40, datetime(2008, 10, d, 22, 0), 9) for d in (23, 25)]    # 9 h in window
+        result = HeuristicClassifier().predict(short + long)
         assert (result.home.lat, result.home.lon) == (39.90, 116.40)
-        assert result.home.confidence == 9 / 11
+        assert result.home.confidence == 9 / 28
 
     def test_tie_goes_to_longer_then_earlier_stay(self):
-        night = self._stay(39.98, 116.31, datetime(2008, 10, 22, 22, 0), 10)       # 10 h in window, 10 h long
-        longer = self._stay(39.90, 116.40, datetime(2008, 10, 23, 22, 0), 12)      # 10 h in window, 12 h long
-        assert HeuristicClassifier().predict([night, longer]).home.lat == 39.90
-        later = self._stay(39.98, 116.31, datetime(2008, 10, 24, 22, 0), 10)       # same as ``night``, a day later
-        assert HeuristicClassifier().predict([later, night]).home.lat == 39.98
+        def two(lat, lon, first_day, hours):
+            return [self._stay(lat, lon, datetime(2008, 10, d, 22, 0), hours) for d in (first_day, first_day + 2)]
+
+        night = two(39.98, 116.31, 22, 10)       # 10 h in window, 10 h long
+        longer = two(39.90, 116.40, 23, 12)      # 10 h in window, 12 h long
+        assert HeuristicClassifier().predict(night + longer).home.lat == 39.90
+        later = two(39.98, 116.31, 24, 10)       # same as ``night``, later
+        assert HeuristicClassifier().predict(later + night).home.lat == 39.98
 
     def test_poi_is_stay_outside_both_windows(self):
         # Saturday 12:00-15:00: no home minutes, no office minutes (weekend).
@@ -116,3 +124,59 @@ class TestWinner:
         assert result.home is None
         assert result.office is None
         assert len(result.pois) == 1
+
+
+class TestUnknown:
+    """Unknown results and the evidence kept with them (notebooks/13_minimum_evidence.ipynb)."""
+
+    @staticmethod
+    def _night(lat, lon, day, hours=10, start_hour=22):
+        """Stay in Beijing starting ``start_hour`` local time (GMT+8 in October)."""
+        arrival = datetime(2008, 10, day, start_hour, 0) - timedelta(hours=8)
+        return {"lat": lat, "lon": lon, "arrival_time": arrival, "departure_time": arrival + timedelta(hours=hours)}
+
+    def test_no_stay_in_any_window_is_unknown_without_evidence(self):
+        result = HeuristicClassifier().predict([self._night(39.95, 116.35, 25, hours=3, start_hour=12)])  # Saturday noon
+        for status in (result.home_status, result.office_status):
+            assert (status.status, status.reason) == ("unknown", "no_candidate")
+            assert status.window_minutes is None
+            assert status.support is None
+
+    def test_one_off_place_is_unknown_but_keeps_evidence(self):
+        result = HeuristicClassifier().predict([self._night(39.98, 116.31, 22)])
+        assert result.home is None
+        assert result.home_status.status == "unknown"
+        assert result.home_status.reason == "one_off_place"
+        assert result.home_status.window_minutes == 600
+        assert result.home_status.support == 1
+
+    def test_few_window_minutes_is_unknown_even_when_repeated(self):
+        # 22:00-01:00 on two nights at the same place: 180 min each, below the 240-minute minimum.
+        stays = [self._night(39.98, 116.31, d, hours=3) for d in (22, 23)]
+        result = HeuristicClassifier().predict(stays)
+        assert result.home is None
+        assert result.home_status.reason == "too_few_window_minutes"
+        assert result.home_status.window_minutes == 180
+        assert result.home_status.support == 2
+
+    def test_support_counts_stays_within_200_m_without_changing_the_winner(self):
+        near = self._night(39.9805, 116.3100, 23)      # about 60 m from the first one
+        far = self._night(39.90, 116.40, 24, hours=12)
+        first = self._night(39.9800, 116.3100, 22)
+        result = HeuristicClassifier().predict([first, near, far])
+        # ``far`` wins on minutes (the tie at 600 goes to the longer stay) but is a one-off.
+        assert result.home is None
+        assert result.home_status.reason == "one_off_place"
+        assert result.home_status.support == 1
+        result = HeuristicClassifier().predict([first, near])
+        assert result.home_status.status == "found"
+        assert result.home_status.support == 2
+        assert result.home_status.reason is None
+
+    def test_each_type_has_its_own_status(self):
+        nights = [self._night(39.98, 116.31, d) for d in (22, 23)]
+        office = [self._night(40.00, 116.33, 22, hours=9, start_hour=9)]          # a single work day
+        result = HeuristicClassifier().predict(nights + office)
+        assert result.home_status.status == "found"
+        assert result.office_status.reason == "one_off_place"
+        assert result.office is None
