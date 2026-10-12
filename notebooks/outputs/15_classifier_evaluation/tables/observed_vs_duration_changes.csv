@@ -1,0 +1,5 @@
+model,type,found -> unknown,moved > 200 m,same,unknown -> found,answered_duration,answered_observed
+v1,home,69,17,87,1,104,36
+v1,office,89,3,79,3,100,14
+v2,home,52,8,114,0,114,62
+v2,office,60,14,100,0,108,48

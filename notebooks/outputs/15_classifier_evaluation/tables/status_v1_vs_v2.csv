@@ -1,0 +1,6 @@
+type,status_v1,found,unknown,All
+home,found,104,0,104
+home,unknown,10,60,70
+office,found,92,8,100
+office,unknown,16,58,74
+All,,222,126,348

@@ -1,0 +1,9 @@
+type,reason_v1,found,no_candidate,one_off_place,too_few_window_minutes
+home,found,104,0,0,0
+home,no_candidate,0,10,0,0
+home,one_off_place,6,0,22,0
+home,too_few_window_minutes,4,0,2,26
+office,found,92,0,8,0
+office,no_candidate,0,15,0,0
+office,one_off_place,11,0,15,0
+office,too_few_window_minutes,5,0,1,27
