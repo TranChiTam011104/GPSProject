@@ -48,6 +48,11 @@ All 174 users' real stay-points were sent to a v1 service shadowing v2 (containe
 This equals the offline baseline of notebook 15 (76% / 75%), so the served shadow reproduces the offline
 comparison. Mean latency: v1 4.2 ms, v2 7.4 ms.
 
+The same run against Cloud Run (revision `gps-inference-00005`, private, `GPS_MODEL_VERSION=v1`,
+`GPS_SHADOW_MODEL_VERSION=v2`, 2026-10-14) gave identical counts, 0 shadow errors, and 174 `gps.shadow` log
+lines in Cloud Logging without coordinates. Mean latency on Cloud Run: v1 9.7 ms, v2 10.0 ms. All 174 background
+tasks completed under request-based billing, so `--no-cpu-throttling` was not needed at this load.
+
 ## Promote
 
 Shadow shows *how* v2 differs, not that it is more correct. The case for v2 is the evidence in notebooks 14-15:
