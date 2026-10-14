@@ -8,8 +8,9 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - ENVIRONMENT=development
-      - LOG_LEVEL=INFO
+      - GPS_ENV=dev
+      - GPS_MODEL_VERSION=v1
+      - GPS_LOG_LEVEL=INFO
       - MLFLOW_TRACKING_URI=http://mlflow:5000
     volumes:
       - ../src:/app/src
