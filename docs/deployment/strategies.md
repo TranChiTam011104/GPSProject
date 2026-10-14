@@ -61,6 +61,27 @@ config flip `GPS_MODEL_VERSION=v2` (new Cloud Run revision, previous revision ke
 that falls far below the 76% / 75% baseline, or a rise in `shadow_errors`, means the request mix differs from
 the offline data and the promote should wait.
 
+## Versioning
+
+There are no trained artifacts: a "model" is code plus the thresholds in `configs/*.yaml`, so it is versioned by
+what already identifies a deploy, not by a registry:
+
+| What | Identity |
+|---|---|
+| Behaviour | `model_version` string in every response and log line: `v1-heuristic`, `v2-cluster-dbscan` |
+| Parameters | `GET /v1/models` returns the active and shadow version and each version's effective thresholds |
+| Code + config | image tag in `gcr.io/<project>/gps-inference:<tag>` (immutable digest on the Cloud Run revision) |
+| Rollback | the previous Cloud Run revision stays available; traffic can be pointed back at it |
+
+The unused MLflow registry scaffolding (`gps.ml`, the mlflow compose service, `make mlflow`) was removed: with no
+artifacts and no experiment tracking in scope it had no consumer. Re-add it only when a trained model exists.
+
+## Promote result (2026-10-14)
+
+The config flip was applied on Cloud Run (`gps-inference-00006`, `GPS_MODEL_VERSION=v2`, shadow off, same image,
+previous revision `00005` kept for rollback). `/health` reports `v2`, and users 068 and 010 sent to Cloud Run
+match the in-process v2 classifier.
+
 ## Cloud Run
 
 ```bash

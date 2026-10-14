@@ -34,6 +34,8 @@ from gps.api.schemas import (
 )
 from geohash2 import encode as geohash_encode
 from gps.config.settings import get_settings
+from gps.models.cluster import ClusterClassifier
+from gps.models.heuristic import HeuristicClassifier
 from gps.monitoring.logger import RequestLogger
 from gps.monitoring.metrics import MetricsCollector
 
@@ -207,6 +209,21 @@ def register_routes(app: FastAPI) -> None:
         except Exception as e:  # pragma: no cover
             logger.exception("Classification failed for user %s", user_id)
             raise HTTPException(status_code=500, detail="Classification failed")
+
+    @app.get("/v1/models", tags=["Monitoring"], summary="Model versions and their parameters")
+    async def model_versions():
+        settings = get_settings()
+        return {
+            "active": get_model_version(),
+            "shadow": settings.GPS_SHADOW_MODEL_VERSION or None,
+            "versions": {
+                "v1": {"model_version": HeuristicClassifier.model_version,
+                       "params": settings.classification.model_dump()},
+                "v2": {"model_version": ClusterClassifier.model_version,
+                       "params": {**settings.classification.model_dump(),
+                                  **settings.clustering.model_dump()}},
+            },
+        }
 
     @app.get("/v1/shadow/summary", tags=["Monitoring"], summary="Shadow vs primary aggregates")
     async def shadow_summary():

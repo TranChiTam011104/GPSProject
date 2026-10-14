@@ -6,7 +6,6 @@ Layered package layout (src layout):
     gps.data       — Ingestion, cleaning, timezone (Checkpoint 1 W1)
     gps.features   — Stay-point detection, clustering, geohash/h3
     gps.models     — Heuristic (v1) + Cluster (v2) classifiers
-    gps.ml         — Model registry / versioning
     gps.pipeline   — End-to-end orchestration
     gps.serving    — Sync / async / batch serving
     gps.api        — FastAPI app + OpenAPI spec (Checkpoint 1 W2)

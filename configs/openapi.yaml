@@ -82,6 +82,18 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /v1/models:
+    get:
+      tags:
+      - Monitoring
+      summary: Model versions and their parameters
+      operationId: model_versions_v1_models_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
   /v1/shadow/summary:
     get:
       tags:

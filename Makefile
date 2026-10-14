@@ -107,11 +107,3 @@ download-data:
 benchmark:
 	PYTHONPATH=$(PYTHONPATH) $(PYTHON) scripts/benchmark.py
 
-## mlflow: Start MLflow UI
-mlflow:
-	mlflow ui --backend-store-uri sqlite:///mlflow.db
-
-## migrate-v1-v2: Migrate model from v1 to v2
-migrate-v1-v2:
-	@echo "Running migration from heuristic (v1) to DBSCAN (v2)..."
-	PYTHONPATH=$(PYTHONPATH) $(PYTHON) -c "from gps.ml.registry import ModelRegistry; r = ModelRegistry(); r.migrate_version('v1', 'v2')"

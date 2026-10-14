@@ -83,3 +83,12 @@ def test_shadow_same_as_primary_is_ignored(monkeypatch):
     monkeypatch.setattr(dependencies, "_current_model_version", None)
     assert dependencies.get_shadow_classifier() is None
     settings_module.get_settings.cache_clear()
+
+
+def test_models_endpoint_lists_versions_and_parameters(client):
+    body = client.get("/v1/models").json()
+    assert body["active"] == "v1" and body["shadow"] == "v2"
+    assert body["versions"]["v1"]["model_version"] == "v1-heuristic"
+    assert body["versions"]["v2"]["model_version"] == "v2-cluster-dbscan"
+    assert body["versions"]["v2"]["params"]["eps_meters"] == 150.0
+    assert body["versions"]["v1"]["params"]["min_window_minutes"] == 240.0
