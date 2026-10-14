@@ -10,7 +10,7 @@ TRACK MLE — Home/Office/POI Inference from GPS traces (VSF Intern, Track B1). 
 - **Checkpoint 2**: Docker + AWS deploy, model versioning (v1 heuristic vs v2 DBSCAN-based), canary/shadow/blue-green deploy strategies.
 - **Checkpoint 3**: sync vs async serving, monitoring/drift/latency dashboards.
 
-Only checkpoint 1 has real, tested implementations today. Most of `src/gps/ml/`, `src/gps/serving/`, `src/gps/monitoring/`, and `src/gps/api/deploy_strategies.py` are checkpoint 2/3 scaffolding (stubs/placeholders), not wired into the running API yet.
+Only checkpoint 1 has real, tested implementations today. Most of `src/gps/ml/`, `src/gps/serving/`, and `src/gps/monitoring/` are checkpoint 2/3 scaffolding (stubs/placeholders), not wired into the running API yet.
 
 ## Commands
 
@@ -123,7 +123,7 @@ Longitude is `lon` everywhere (`StayPoint`, `Location`, parquet columns). Some o
 
 ### API (`src/gps/api/main.py`)
 
-FastAPI app factory (`create_app()`) — module-level `app` object for `uvicorn gps.api.main:app`. Endpoints: `GET /health`, `GET /ready`, `POST /v1/classify/{user_id}` (main classification endpoint, versioned in the URL per the checkpoint-1 spec), `GET /metrics` (Prometheus). Classifier selection happens via `api/dependencies.py::get_classifier` (keyed by `GPS_MODEL_VERSION`). The classify endpoint takes **stay-points only** (`api/schemas.py::StayPointInput`: `lat`, `lon`, `arrival_time`, `departure_time` as naive GMT — tz-aware input is converted — plus optional `observed_minutes`, `altitude_m`), the same shape the pipeline writes to `data/processed/staypoints/`. Raw GPS points are rejected with 422: detection belongs to the pipeline. In the model layer, `coerce_stay_points()` / `StayPointInput.from_dict()` accept API models, pipeline rows (`arrival`/`departure` column names) and `StayPoint` objects.
+FastAPI app factory (`create_app()`) — module-level `app` object for `uvicorn gps.api.main:app`. Endpoints: `GET /health`, `GET /ready`, `POST /v1/classify/{user_id}` (main classification endpoint, versioned in the URL per the checkpoint-1 spec), `GET /metrics` (Prometheus), `GET /v1/shadow/summary` (shadow aggregates). With `GPS_SHADOW_MODEL_VERSION` set (e.g. v2 while `GPS_MODEL_VERSION=v1`), `api/shadow.py` runs that model after the response and keeps only aggregates, never coordinates (`docs/deployment/strategies.md`). Classifier selection happens via `api/dependencies.py::get_classifier` (keyed by `GPS_MODEL_VERSION`). The classify endpoint takes **stay-points only** (`api/schemas.py::StayPointInput`: `lat`, `lon`, `arrival_time`, `departure_time` as naive GMT — tz-aware input is converted — plus optional `observed_minutes`, `altitude_m`), the same shape the pipeline writes to `data/processed/staypoints/`. Raw GPS points are rejected with 422: detection belongs to the pipeline. In the model layer, `coerce_stay_points()` / `StayPointInput.from_dict()` accept API models, pipeline rows (`arrival`/`departure` column names) and `StayPoint` objects.
 
 ### Config (`src/gps/config/settings.py`)
 

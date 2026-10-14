@@ -15,6 +15,8 @@ from gps.config.settings import get_settings
 # Global classifier instance and the version it was built for
 _classifier: Optional[BaseClassifier] = None
 _current_model_version: Optional[str] = None
+_shadow_classifier: Optional[BaseClassifier] = None
+_shadow_version: Optional[str] = None
 
 
 def get_classifier() -> BaseClassifier:
@@ -27,6 +29,18 @@ def get_classifier() -> BaseClassifier:
     if _classifier is None:
         _classifier = _create_classifier(get_model_version())
     return _classifier
+
+
+def get_shadow_classifier() -> Optional[BaseClassifier]:
+    """The shadow classifier (``GPS_SHADOW_MODEL_VERSION``), or None when shadow is off."""
+    global _shadow_classifier, _shadow_version
+    version = get_settings().GPS_SHADOW_MODEL_VERSION
+    if not version or version == get_model_version():
+        return None
+    if _shadow_classifier is None or _shadow_version != version:
+        _shadow_classifier = _create_classifier(version)
+        _shadow_version = version
+    return _shadow_classifier
 
 
 def get_model_version() -> str:

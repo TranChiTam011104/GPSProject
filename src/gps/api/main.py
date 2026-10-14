@@ -20,11 +20,12 @@ from contextlib import asynccontextmanager
 from dataclasses import asdict
 from typing import Optional
 
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from gps.api.dependencies import get_classifier, get_model_version
+from gps.api import shadow
+from gps.api.dependencies import get_classifier, get_model_version, get_shadow_classifier
 from gps.api.schemas import (
     ClassificationRequest,
     ClassificationResponse,
@@ -162,10 +163,18 @@ def register_routes(app: FastAPI) -> None:
     async def classify_user(
         user_id: str,
         request: ClassificationRequest,
+        background_tasks: BackgroundTasks,
         classifier=Depends(get_classifier),
+        shadow_classifier=Depends(get_shadow_classifier),
     ):
         try:
+            start = time.perf_counter()
             result = classifier.predict(request.stay_points)
+            primary_ms = (time.perf_counter() - start) * 1000
+            if shadow_classifier is not None:
+                background_tasks.add_task(
+                    shadow.run_shadow, shadow_classifier, request.stay_points, result, primary_ms
+                )
             # Stamp the user_id (which the classifier doesn't know about).
             result.user_id = user_id
 
@@ -198,6 +207,12 @@ def register_routes(app: FastAPI) -> None:
         except Exception as e:  # pragma: no cover
             logger.exception("Classification failed for user %s", user_id)
             raise HTTPException(status_code=500, detail="Classification failed")
+
+    @app.get("/v1/shadow/summary", tags=["Monitoring"], summary="Shadow vs primary aggregates")
+    async def shadow_summary():
+        return {"primary": get_model_version(),
+                "shadow": get_settings().GPS_SHADOW_MODEL_VERSION or None,
+                **shadow.stats.summary()}
 
     @app.get("/metrics", tags=["Monitoring"])
     async def prometheus_metrics():

@@ -82,6 +82,9 @@ class Settings(BaseSettings):
 
     # Model selection
     GPS_MODEL_VERSION: str = "v1"
+    # Shadow deployment: this version runs after the response and is only compared, never returned.
+    # Empty = off.
+    GPS_SHADOW_MODEL_VERSION: str = ""
     GPS_API_PORT: int = 8080
     GPS_PROMETHEUS_PORT: int = 9090
 
