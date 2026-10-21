@@ -4,3 +4,5 @@ steps:
 images: ["gcr.io/$PROJECT_ID/gps-inference:$_TAG"]
 substitutions:
   _TAG: v1
+options:
+  logging: CLOUD_LOGGING_ONLY

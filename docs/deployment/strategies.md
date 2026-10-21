@@ -18,7 +18,7 @@ and **v2** (DBSCAN places). This page records which rollout strategy fits them, 
 |---|---|---|
 | **Shadow** | A second model run on real requests, results only logged | **Chosen.** Gives real-request evidence at zero user risk; the cost is a few ms of background CPU. |
 | **Canary** | A signal from the exposed users (errors, complaints, feedback) to decide whether to widen | **Rejected.** The signal does not exist: wrong answers are silent. Splitting by request would also make one user's home flip between models. |
-| **Blue-green** | Two environments and an atomic switch | Used for the **promote** step: flipping `GPS_MODEL_VERSION` v1 -> v2 is one config change, rolled back by flipping it back. |
+| **Blue-green** | Two environments side by side, the new one verified before an atomic switch | **Not used.** The only thing that changes is which model one image selects, so a second environment buys nothing. Promote is a plain config change (below); no pre-switch verification on a separate copy was done. |
 
 ## How shadow works in this repo
 
@@ -81,6 +81,40 @@ artifacts and no experiment tracking in scope it had no consumer. Re-add it only
 The config flip was applied on Cloud Run (`gps-inference-00006`, `GPS_MODEL_VERSION=v2`, shadow off, same image,
 previous revision `00005` kept for rollback). `/health` reports `v2`, and users 068 and 010 sent to Cloud Run
 match the in-process v2 classifier.
+
+## Least privilege (IAM, 2026-10-19)
+
+Until this change the service ran as the default compute service account, which holds `roles/editor` on the whole
+project, and the same account was the Cloud Build identity. The app calls no Google API (config is in the image, logs
+go to stdout), so it needed no role at all. Four identities now, one per job, each with the smallest scope:
+
+| Role in the flow | Identity | Permissions (scope) |
+|---|---|---|
+| Runs the service | `gps-inference-run` | **none** |
+| Builds the image | `gps-build` | `artifactregistry.writer` (repo `gcr.io`), `logging.logWriter` (project), `storage.objectViewer` (source bucket) |
+| Deploys | `gps-deployer` | `run.developer` (the service), `iam.serviceAccountUser` (only `gps-inference-run`, `gps-build`), `artifactregistry.reader` (repo `gcr.io`), `storage.objectAdmin` + `legacyBucketReader` (source bucket), `cloudbuild.builds.editor`, `serviceusage.serviceUsageConsumer` (project) |
+| Calls the API | `gps-client` | `run.invoker` on the service only |
+
+The service stays `--no-allow-unauthenticated`. Build and deploy were run as `gps-deployer` (impersonation), so the
+narrow set is proven sufficient: image `gps-inference:v2-lp` → revision `gps-inference-00008`, same code and config
+as `00007`, `GPS_MODEL_VERSION=v2`.
+
+Checks:
+
+| Check | Result |
+|---|---|
+| Call without a token | 403 |
+| `gps-client` token → `/health` | 200, `model_version: v2` |
+| Roles of `gps-inference-run` on the project | none |
+| Deployer tries to reset the service IAM (`gcloud run deploy` does) | refused, service stays private |
+
+Removed: `roles/editor` and `cloudbuild.builds.builder` from the default compute account (nothing uses it now); the
+`github-actions` account (MovieLens CI, `run.admin`, `storage.admin`, `iam.securityAdmin`) and its non-expiring JSON key
+were disabled, not deleted. The policy before cleanup is kept in `_claude_workspace/deploy/iam_before_cleanup.json`.
+
+Not least-privilege yet: `logging.logWriter`, `cloudbuild.builds.editor` and `serviceUsageConsumer` are bound at
+project level; `gcloud builds submit` needs `--gcs-source-staging-dir` because finding the default bucket needs the
+project-wide `storage.buckets.list`. A real CI would deploy through Workload Identity Federation, not a key.
 
 ## Cloud Run
 
