@@ -1,0 +1,3 @@
+between_files,gaps,median_hours,home_min,office_min,home_min_share,office_min_share
+inside one file (notebook 06),9856,0.948,149282.75,358622.933,0.08,0.304
+between two files (notebook 04),6158,9.898,1723574.5,822523.15,0.92,0.696

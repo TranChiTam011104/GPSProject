@@ -10,7 +10,7 @@ TRACK MLE — Home/Office/POI Inference from GPS traces (VSF Intern, Track B1). 
 - **Checkpoint 2**: Docker + AWS deploy, model versioning (v1 heuristic vs v2 DBSCAN-based), canary/shadow/blue-green deploy strategies.
 - **Checkpoint 3**: sync vs async serving, monitoring/drift/latency dashboards.
 
-Only checkpoint 1 has real, tested implementations today. Most of `src/gps/ml/`, `src/gps/serving/`, `src/gps/monitoring/`, and `src/gps/api/deploy_strategies.py` are checkpoint 2/3 scaffolding (stubs/placeholders), not wired into the running API yet.
+Only checkpoint 1 has real, tested implementations today. Most of `src/gps/ml/`, `src/gps/serving/`, and `src/gps/monitoring/` are checkpoint 2/3 scaffolding (stubs/placeholders), not wired into the running API yet.
 
 ## Commands
 
@@ -34,7 +34,7 @@ uvicorn gps.api.main:app --reload --host 0.0.0.0 --port 8000   # run API locally
 # API docs: http://localhost:8000/docs (Swagger), /redoc, /openapi.json
 ```
 
-The `Makefile` targets (`make test`, `make lint`, `make format`, `make run`, `make docker-build`, ...) reference `src/api/main.py`, which is stale — the real app is `src/gps/api/main.py`. Prefer the direct commands above; adjust the Makefile if you touch it.
+The `Makefile` targets (`make test`, `make lint`, `make format`, `make run`, `make openapi`, `make docker-build`, ...) wrap the same commands; `make openapi` regenerates `configs/openapi.yaml` from the app (`scripts/export_openapi.py`).
 
 Data processing pipeline (GeoLife raw `.plt` → cleaned Parquet):
 
@@ -44,6 +44,13 @@ python scripts/run_processing.py --user 010 --verbose   # smoke test on one user
 python scripts/run_processing.py --clean --workers 2    # wipe output dir first
 python scripts/run_processing.py --no-stay-points       # clean points only, skip stay-point detection
 python -m gps.data.processing --data-dir data/raw       # same pipeline via the module CLI
+```
+
+Home/office map of one user (review / reports; outputs under git-ignored `data/reports/user_{id}/`, needs `folium` + `matplotlib` from the dev extra):
+
+```bash
+python scripts/plot_user_places.py --candidates   # users with home + office found by v1 and v2
+python scripts/plot_user_places.py --user 068     # map.html (layers, street/satellite) + summary.json
 ```
 
 Notebooks (EDA / evidence) — run with a real kernel and save outputs into the `.ipynb` (needs the `nbclient` dev extra; heavy steps are cached under `notebooks/outputs/<nb>/cache/`, so re-runs are fast):
@@ -78,7 +85,8 @@ Thresholds live in `CleaningThresholds`. **Every threshold must be justified by 
 - `max_gap_seconds = 1200` — between within-trip gap P99.9 (252 s) and P99.99 (2,170 s), gaps measured within a file; `notebooks/03_segment_gap_threshold.ipynb`. Gaps cannot find trip boundaries (55.4% of labelled boundaries have gap ≤ 5 s), so segments are for centroid/visualization, not trips.
 - `ambiguous_duplicate_spread_m = 200` — reuses the stay-point radius; decision evidence in `notebooks/02_duplicate_timestamps.ipynb`.
 - Stay-point `time_threshold_minutes = 30`, `distance_threshold_meters = 200`, `MAX_GAP_HOURS = 18` — notebooks 07 and 04 (see the stay-point section).
-- `HeuristicClassifier._bucket_decimals` and the classifier's hour windows are still unjustified placeholders.
+- Classifier hour windows: home 22–08 h, office 09–18 h Mon–Fri local time — `notebooks/12_home_office_time_windows.ipynb` (hourly profile of the night/day place; the grid of window edges changes the result by less than its noise, so reasonable, not optimal).
+- v2 places: DBSCAN `eps_meters = 150`, `min_samples = 2`, unknown below 240 window minutes or 2 window days — `notebooks/14_place_clustering.ipynb` (split-half stability flat from 100 m; chosen by place width and home/office merging; reasonable, not optimal).
 
 `segment_trajectories` starts a new segment when the gap exceeds `max_gap_seconds` **or** the step speed exceeds `impossible_speed_kmh`. Jumps that are not single-point spikes are kept but disconnected (`notebooks/08_trajectory_jumps.ipynb`): 58 multi-point excursions (up to ~19,000 points / 15 h) touch only 11 stay-points (0.03% of dwell) and a "familiar place" test cannot tell which side is wrong; 250 one-sided shifts (median 1.8 km in 4 s, both sides mostly at places the user visits elsewhere) look like timing glitches at signal re-acquisition, and a stay-point cannot straddle them. No extra cleaning rule — any rule would need an unevidenced block-size threshold. `sub_trip_id`s are made globally unique as `{user_id}_{plt_stem}_{segment}` to avoid collisions across users/files.
 
@@ -103,19 +111,23 @@ Gaps (no GPS points for > 20 min) *inside* a stay-point are deliberately **not**
 
 ### Classification (`src/gps/models/`)
 
-`BaseClassifier` (in `models/base.py`) defines the `predict(stay_points) -> ClassificationResult` contract shared by v1 (heuristic, implemented) and v2 (DBSCAN + heuristic, scaffolding in `models/cluster.py`). Inputs are normalized through `coerce_stay_points()` / `StayPointInput.from_dict()` (API models, pipeline rows, or `StayPoint` objects).
+`BaseClassifier` (in `models/base.py`) defines the `predict(stay_points) -> ClassificationResult` contract shared by v1 (heuristic, `models/heuristic.py`) and v2 (DBSCAN places + the same windows, `models/cluster.py`), both implemented; `GPS_MODEL_VERSION` picks one. Inputs are normalized through `coerce_stay_points()` / `StayPointInput.from_dict()` (API models, pipeline rows, or `StayPoint` objects).
 
-`HeuristicClassifier` (`models/heuristic.py`, v1) buckets stay-points by rounded lat/lon to absorb GPS jitter, classifies each by the local hour of its arrival — local time from the stay's location via `gps.data.timezone.local_times` (inputs are naive GMT; using GMT hours mislabelled home for 152/174 users) — (`home_hour_start/end` wraps midnight, `office_hour_start/end` restricted to `work_days`), then picks the highest-total-dwell-time bucket per type as the winner. **Confidence is heuristic, not a learned probability**: `confidence = winner_dwell_time / total_type_dwell_time` — this is a deliberate design decision because GeoLife has no ground-truth home/office labels (documented in both `models/base.py` and `api/schemas.py` docstrings).
+`HeuristicClassifier` (`models/heuristic.py`, v1) scores **each stay-point on its own** (no merging of nearby stays; that is v2) by the minutes it spends inside the daily home / office window, in local time from the stay's location via `gps.data.timezone.local_times` (inputs are naive GMT; using GMT hours mislabelled home for 152/174 users). `home_hour_start/end` (22–08) wraps midnight; `office_hour_start/end` (09–18) counts only `work_days`. The winner per type is the stay with the most window minutes (ties: longer stay, then earlier arrival); POIs are stays touching neither window. Time-in-window finds home for 164/174 users against 130 for the old arrival-hour rule (notebook 12); per-stay scoring agrees with the core night/day place for ~69%/66% of users, scoring a 200 m area for ~89%/84%, the gap v2 should close. **Unknown results** (`PlaceStatus`, `ClassificationResult.home_status/office_status`, API `home_status/office_status`; evidence `notebooks/13_minimum_evidence.ipynb`): home and office are decided separately and are `None`/`null` with a reason when the winner has < `min_window_minutes` (240) inside the window (`too_few_window_minutes`) or fewer than `min_support` (2) candidates within `support_radius_m` (200 m), itself included (`one_off_place`), or when there is no candidate (`no_candidate`); `window_minutes` and `support` stay in the status. Counting nearby candidates neither merges stays nor changes the winner. Split-half stability (odd vs even days, bootstrap by file-sharing group) is only 41%/42% for v1 against 27%/23% for a random candidate, more data does not help (full nights tie), and v1 confidence does not predict stability, so `min_confidence` was removed. Home is answered for 104 users, office for 100 (164/159 before). Users are never dropped; only-home or only-office is valid.
+
+`ClusterClassifier` (`models/cluster.py`, v2; evidence `notebooks/14_place_clustering.ipynb`) groups a user's stays into **places** with sklearn DBSCAN (haversine, `eps_meters` 150, `min_samples` 2 counting stays; `place_labels`), keeps every noise stay as a place of its own (no data dropped), and scores each place by the window minutes of all its stays (same windows and `window_minutes` as v1). Ties: longer total stay, then earlier first arrival; location = duration-weighted centre; POIs = places touching neither window (same grouping as home/office, not v1's geohash). Unknown when the winning place has < `min_window_minutes` (240) or window minutes on < `min_window_days` (2) distinct days (`HeuristicClassifier.window_days`; a night belongs to the day it opens) — `PlaceStatus.support` holds those days for v2. Why: split-half stability is flat from `eps` 100 m (55–68%), larger `eps` widens places and merges home with office beyond their real co-location rate (26–28%) from 300 m; 150 m is the smallest radius where both types reach 62% (v1 41%/42%); counting distinct days in `min_samples` did not help. With `min_samples = 2` there are no border points, so the result does not depend on input order. Home answered for 114 users, office for 108.
+
+**Confidence is heuristic, not a learned probability**: `confidence = winner_window_minutes / total_type_window_minutes` — this is a deliberate design decision because GeoLife has no ground-truth home/office labels (documented in both `models/base.py` and `api/schemas.py` docstrings).
 
 Longitude is `lon` everywhere (`StayPoint`, `Location`, parquet columns). Some older tests/fixtures (e.g. `tests/conftest.py`) still use `lng` — fix them to `lon` rather than adding aliases.
 
 ### API (`src/gps/api/main.py`)
 
-FastAPI app factory (`create_app()`) — module-level `app` object for `uvicorn gps.api.main:app`. Endpoints: `GET /health`, `GET /ready`, `POST /v1/classify/{user_id}` (main classification endpoint, versioned in the URL per the checkpoint-1 spec), `GET /metrics` (Prometheus). Classifier selection happens via `api/dependencies.py::get_classifier` (keyed by `GPS_MODEL_VERSION`). The classify endpoint takes **stay-points only** (`api/schemas.py::StayPointInput`: `lat`, `lon`, `arrival_time`, `departure_time` as naive GMT — tz-aware input is converted — plus optional `observed_minutes`, `altitude_m`), the same shape the pipeline writes to `data/processed/staypoints/`. Raw GPS points are rejected with 422: detection belongs to the pipeline. In the model layer, `coerce_stay_points()` / `StayPointInput.from_dict()` accept API models, pipeline rows (`arrival`/`departure` column names) and `StayPoint` objects.
+FastAPI app factory (`create_app()`) — module-level `app` object for `uvicorn gps.api.main:app`. Endpoints: `GET /health`, `GET /ready`, `POST /v1/classify/{user_id}` (main classification endpoint, versioned in the URL per the checkpoint-1 spec), `GET /metrics` (Prometheus), `GET /v1/shadow/summary` (shadow aggregates). With `GPS_SHADOW_MODEL_VERSION` set (e.g. v2 while `GPS_MODEL_VERSION=v1`), `api/shadow.py` runs that model after the response and keeps only aggregates, never coordinates (`docs/deployment/strategies.md`). Classifier selection happens via `api/dependencies.py::get_classifier` (keyed by `GPS_MODEL_VERSION`). The classify endpoint takes **stay-points only** (`api/schemas.py::StayPointInput`: `lat`, `lon`, `arrival_time`, `departure_time` as naive GMT — tz-aware input is converted — plus optional `observed_minutes`, `altitude_m`), the same shape the pipeline writes to `data/processed/staypoints/`. Raw GPS points are rejected with 422: detection belongs to the pipeline. In the model layer, `coerce_stay_points()` / `StayPointInput.from_dict()` accept API models, pipeline rows (`arrival`/`departure` column names) and `StayPoint` objects.
 
 ### Config (`src/gps/config/settings.py`)
 
-Layered Pydantic Settings: module defaults → `configs/{GPS_ENV}.yaml` (default `configs/dev.yaml`) → `GPS_`-prefixed env vars → `.env`. `get_settings()` is `lru_cache`d — restart the process (or clear the cache) to pick up config changes in tests. Nested blocks (`stay_point`, `clustering`, `classification`, `api`) only load from YAML, not flat env vars.
+Layered Pydantic Settings: module defaults → `configs/{GPS_ENV}.yaml` (default `configs/dev.yaml`) → `GPS_`-prefixed env vars → `.env`. `get_settings()` is `lru_cache`d — restart the process (or clear the cache) to pick up config changes in tests. Flat fields are named `GPS_*` and read from the env var of the same name (no `env_prefix`). Nested blocks (`stay_point`, `clustering`, `classification`, `api`) only load from YAML, not flat env vars. `api/dependencies.py` builds the classifier from `settings.classification` (+ `settings.clustering` for v2) and takes the default version from `GPS_MODEL_VERSION`; `prod.yaml` carries the same evidenced thresholds as `dev.yaml` (only serving settings differ).
 
 ### Privacy (`src/gps/privacy/anonymizer.py`)
 
@@ -123,7 +135,7 @@ Layered Pydantic Settings: module defaults → `configs/{GPS_ENV}.yaml` (default
 
 ### Notebooks vs. production code
 
-Notebooks are EDA / design-validation only; production never imports them. `notebooks/README.md` is the index: one notebook per decision, numbered in dependency order (01 speed threshold → 02 duplicates → 03 segment gap → 04 file boundaries → 05 cleaning impact on stay-points → 06 gaps inside stay-points → 07 stay-point thresholds → 08 jumps → 09 timezone → 10 stay-point validation → 11 shared recordings), each citing the `src/` code it justifies. Conventions: narrative in Vietnamese markdown; code, file names, figure/axis titles and table columns in English; outputs under `notebooks/outputs/<notebook>/{figures,tables,cache,maps}` with `cache/` and `maps/` git-ignored. `notebooks/archive/` holds superseded early exploration (the original cleaning prototype and the old stay-point threshold notebook). When a decision changes, update its notebook first, then `src/`.
+Notebooks are EDA / design-validation only; production never imports them. `notebooks/README.md` is the index: one notebook per decision, numbered in dependency order (01 speed threshold → 02 duplicates → 03 segment gap → 04 file boundaries → 05 cleaning impact on stay-points → 06 gaps inside stay-points → 07 stay-point thresholds → 08 jumps → 09 timezone → 10 stay-point validation → 11 shared recordings → 12 home/office windows → 13 minimum evidence / unknown → 14 v2 place clustering), each citing the `src/` code it justifies. Conventions: narrative in Vietnamese markdown; code, file names, figure/axis titles and table columns in English; outputs under `notebooks/outputs/<notebook>/{figures,tables,cache,maps}` with `cache/` and `maps/` git-ignored. `notebooks/archive/` holds superseded early exploration (the original cleaning prototype and the old stay-point threshold notebook). When a decision changes, update its notebook first, then `src/`.
 
 ## Notes
 

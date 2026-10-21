@@ -29,17 +29,22 @@ class StayPointConfig(BaseModel):
 
 
 class ClusteringConfig(BaseModel):
-    eps_meters: float = 100.0
-    min_samples: int = 3
+    """v2 place grouping and its "unknown" rule (notebooks/14_place_clustering.ipynb)."""
+
+    eps_meters: float = 150.0
+    min_samples: int = 2
+    min_window_days: int = 2
 
 
 class ClassificationConfig(BaseModel):
     home_hour_start: int = 22
-    home_hour_end: int = 6
+    home_hour_end: int = 8
     office_hour_start: int = 9
     office_hour_end: int = 18
     work_days: tuple = (0, 1, 2, 3, 4)
-    min_confidence: float = 0.3
+    min_window_minutes: float = 240.0
+    min_support: int = 2
+    support_radius_m: float = 200.0
     min_duration_minutes: float = 30.0
     top_poi_n: int = 5
     geohash_precision: int = 6
@@ -77,6 +82,9 @@ class Settings(BaseSettings):
 
     # Model selection
     GPS_MODEL_VERSION: str = "v1"
+    # Shadow deployment: this version runs after the response and is only compared, never returned.
+    # Empty = off.
+    GPS_SHADOW_MODEL_VERSION: str = ""
     GPS_API_PORT: int = 8080
     GPS_PROMETHEUS_PORT: int = 9090
 
@@ -86,8 +94,8 @@ class Settings(BaseSettings):
     classification: ClassificationConfig = Field(default_factory=ClassificationConfig)
     api: APIConfig = Field(default_factory=APIConfig)
 
+    # No env_prefix: the field names already carry ``GPS_`` (a prefix would read GPS_GPS_*).
     model_config = SettingsConfigDict(
-        env_prefix="GPS_",
         env_file=".env",
         env_file_encoding="utf-8",
         case_sensitive=False,

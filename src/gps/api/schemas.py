@@ -94,11 +94,12 @@ class LocationOutput(BaseModel):
     The ``confidence`` field is a **heuristic** value in [0, 1] — NOT a
     supervised-learning probability. It is computed as:
 
-        confidence = winner_dwell_time / total_type_dwell_time
+        confidence = winner_window_minutes / total_type_window_minutes
 
-    where ``winner`` is the most-visited (or longest-dwell) stay-point
-    cluster for that location type and ``type`` is one of
-    ``"home" / "office" / "poi"``. The intuition: if a single location
+    where the minutes are the time stay-points spend inside the type's daily
+    window (local time), ``winner`` is the stay-point with the most such
+    minutes (v1 scores each stay-point on its own) and ``type`` is one of
+    ``"home" / "office" / "poi"``. POIs use plain dwell time. The intuition: if a single location
     captures most of the user's time inside the expected time-window
     (e.g. nights for home, work-hours for office) we are confident
     that this is *the* home/office.
@@ -154,6 +155,28 @@ class LocationOutput(BaseModel):
     )
 
 
+class PlaceStatusOutput(BaseModel):
+    """Whether home / office was answered, and the evidence behind the answer."""
+
+    status: Literal["found", "unknown"] = Field(
+        ..., description="found: the location is given; unknown: it is null")
+    reason: Literal["no_candidate", "too_few_window_minutes", "one_off_place"] | None = Field(
+        default=None,
+        description="Why the answer is unknown: no stay-point has any minute in the window; the best "
+                    "candidate has fewer than 240 minutes in the window; or it is a one-off (v1: no other "
+                    "stay-point with window minutes within 200 m; v2: window minutes on a single day). "
+                    "Null when found.",
+    )
+    window_minutes: float | None = Field(
+        default=None, description="Minutes of the best candidate inside the window; null without candidates")
+    support: int | None = Field(
+        default=None,
+        description="How many times the user was at the best candidate's place inside the window "
+                    "(v1: stay-points within 200 m of it, itself included; v2: distinct days with window "
+                    "minutes at the place); null without candidates",
+    )
+
+
 class ClassificationResponse(BaseModel):
     """Response schema for classification endpoint."""
     user_id: str = Field(..., description="User identifier")
@@ -169,6 +192,8 @@ class ClassificationResponse(BaseModel):
         default=None,
         description="Inferred office location"
     )
+    home_status: PlaceStatusOutput = Field(..., description="Status and evidence of the home answer")
+    office_status: PlaceStatusOutput = Field(..., description="Status and evidence of the office answer")
     pois: list[LocationOutput] = Field(
         default_factory=list,
         description="Points of Interest"

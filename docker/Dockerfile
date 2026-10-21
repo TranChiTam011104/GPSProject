@@ -1,47 +1,42 @@
-# Build stage
-FROM python:3.10-slim as builder
+# API service image. Build from the repo root:
+#   docker build -f docker/Dockerfile -t gps-inference:latest .
+
+# ── Build stage: runtime dependencies only (requirements.txt) ──
+FROM python:3.11-slim AS builder
 
 WORKDIR /app
 
-# Install build dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
+RUN apt-get update && apt-get install -y --no-install-recommends build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Python dependencies
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 
-# Production stage
-FROM python:3.10-slim
+# ── Runtime stage ──
+FROM python:3.11-slim
 
 WORKDIR /app
 
-# Create non-root user
 RUN groupadd -r appgroup && useradd -r -g appgroup appuser
 
-# Copy installed packages from builder
-COPY --from=builder /usr/local/lib/python3.10/site-packages /usr/local/lib/python3.10/site-packages
-COPY --from=builder /usr/local/bin /usr/local/bin
+COPY --from=builder /install /usr/local
 
-# Copy application code
+# The package lives at src/gps; settings read configs/{GPS_ENV}.yaml from /app/configs.
 COPY src/ ./src/
 COPY configs/ ./configs/
 
-# Set environment variables
-ENV PYTHONPATH=/app
-ENV PYTHONUNBUFFERED=1
-ENV ENVIRONMENT=production
+# GPS_MODEL_VERSION picks the classifier (v1 heuristic, v2 DBSCAN places); override with -e.
+ENV PYTHONPATH=/app/src \
+    PYTHONUNBUFFERED=1 \
+    GPS_ENV=prod \
+    GPS_MODEL_VERSION=v1
 
-# Switch to non-root user
 USER appuser
 
-# Expose port
 EXPOSE 8000
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')" || exit 1
+HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
+    CMD python -c "import os, urllib.request; urllib.request.urlopen('http://localhost:%s/health' % os.environ.get('PORT', '8000'))" || exit 1
 
-# Run the application
-CMD ["uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Cloud Run injects PORT (8080); locally it falls back to 8000.
+CMD ["sh", "-c", "exec uvicorn gps.api.main:app --host 0.0.0.0 --port ${PORT:-8000}"]

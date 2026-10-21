@@ -1,0 +1,20 @@
+# Keep the build context small: the image needs only src/, configs/ and requirements.txt.
+data/
+notebooks/
+models/
+tests/
+docs/
+scripts/
+.git/
+.github/
+.claude/
+.vscode/
+**/__pycache__/
+**/*.pyc
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.env
+*.html
+*.pdf
+*.md

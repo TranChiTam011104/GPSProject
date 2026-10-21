@@ -17,13 +17,15 @@ import logging
 import os
 import time
 from contextlib import asynccontextmanager
+from dataclasses import asdict
 from typing import Optional
 
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from gps.api.dependencies import get_classifier, get_model_version
+from gps.api import shadow
+from gps.api.dependencies import get_classifier, get_model_version, get_shadow_classifier
 from gps.api.schemas import (
     ClassificationRequest,
     ClassificationResponse,
@@ -32,6 +34,8 @@ from gps.api.schemas import (
 )
 from geohash2 import encode as geohash_encode
 from gps.config.settings import get_settings
+from gps.models.cluster import ClusterClassifier
+from gps.models.heuristic import HeuristicClassifier
 from gps.monitoring.logger import RequestLogger
 from gps.monitoring.metrics import MetricsCollector
 
@@ -161,10 +165,18 @@ def register_routes(app: FastAPI) -> None:
     async def classify_user(
         user_id: str,
         request: ClassificationRequest,
+        background_tasks: BackgroundTasks,
         classifier=Depends(get_classifier),
+        shadow_classifier=Depends(get_shadow_classifier),
     ):
         try:
+            start = time.perf_counter()
             result = classifier.predict(request.stay_points)
+            primary_ms = (time.perf_counter() - start) * 1000
+            if shadow_classifier is not None:
+                background_tasks.add_task(
+                    shadow.run_shadow, shadow_classifier, request.stay_points, result, primary_ms
+                )
             # Stamp the user_id (which the classifier doesn't know about).
             result.user_id = user_id
 
@@ -186,6 +198,8 @@ def register_routes(app: FastAPI) -> None:
                 locations=[_to_dict(loc) for loc in result.locations],
                 home=_to_dict(result.home) if result.home else None,
                 office=_to_dict(result.office) if result.office else None,
+                home_status=asdict(result.home_status),
+                office_status=asdict(result.office_status),
                 pois=[_to_dict(loc) for loc in result.pois],
                 model_version=classifier.get_model_version(),
                 processed_at=result.processed_at,
@@ -195,6 +209,27 @@ def register_routes(app: FastAPI) -> None:
         except Exception as e:  # pragma: no cover
             logger.exception("Classification failed for user %s", user_id)
             raise HTTPException(status_code=500, detail="Classification failed")
+
+    @app.get("/v1/models", tags=["Monitoring"], summary="Model versions and their parameters")
+    async def model_versions():
+        settings = get_settings()
+        return {
+            "active": get_model_version(),
+            "shadow": settings.GPS_SHADOW_MODEL_VERSION or None,
+            "versions": {
+                "v1": {"model_version": HeuristicClassifier.model_version,
+                       "params": settings.classification.model_dump()},
+                "v2": {"model_version": ClusterClassifier.model_version,
+                       "params": {**settings.classification.model_dump(),
+                                  **settings.clustering.model_dump()}},
+            },
+        }
+
+    @app.get("/v1/shadow/summary", tags=["Monitoring"], summary="Shadow vs primary aggregates")
+    async def shadow_summary():
+        return {"primary": get_model_version(),
+                "shadow": get_settings().GPS_SHADOW_MODEL_VERSION or None,
+                **shadow.stats.summary()}
 
     @app.get("/metrics", tags=["Monitoring"])
     async def prometheus_metrics():

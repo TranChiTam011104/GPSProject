@@ -1,0 +1,11 @@
+# Without this file gcloud applies .gitignore, which excludes src/gps/models/.
+# Patterns are anchored to the root so src/gps/data/ is kept.
+/.git
+/data/
+/notebooks/
+/tests/
+/docs/
+/*.html
+__pycache__/
+*.pyc
+.venv/

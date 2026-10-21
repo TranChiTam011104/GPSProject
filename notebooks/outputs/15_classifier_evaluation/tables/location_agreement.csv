@@ -1,0 +1,3 @@
+type,both_found,same_place,ci_lo,ci_hi,same place (<= 200 m),different place,v1 stay inside v2 place,median_dist_m_if_different
+home,104,0.76,0.678,0.848,79,22,3,9303.948
+office,92,0.75,0.659,0.848,69,21,2,5520.026

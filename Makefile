@@ -21,7 +21,7 @@ AWS_REGION := us-east-1
 # Model
 MODEL_VERSION ?= v1
 
-.PHONY: help install setup test test-unit test-integration test-e2e lint format clean run docker-build docker-run docker-stop api-docs
+.PHONY: help install setup test test-unit test-integration test-e2e lint format clean run docker-build docker-run docker-stop api-docs openapi
 
 ## help: Show this help message
 help:
@@ -37,9 +37,7 @@ install:
 ## setup: Setup development environment
 setup: install
 	@echo "Creating necessary directories..."
-	-mkdir -p $(RAW_DIR)/geolife $(RAW_DIR)/gowalla $(RAW_DIR)/brightkite
-	-mkdir -p $(PROCESSED_DIR)/cleaned_traces $(PROCESSED_DIR)/stay_points
-	-mkdir -p models/v1 models/v2
+	-mkdir -p $(RAW_DIR) $(PROCESSED_DIR)/users $(PROCESSED_DIR)/staypoints $(PROCESSED_DIR)/quarantine
 	@echo "Environment ready!"
 
 ## test: Run all tests
@@ -93,6 +91,10 @@ docker-run:
 docker-stop:
 	docker stop $(DOCKER_IMAGE) || true
 
+## openapi: Regenerate configs/openapi.yaml from the FastAPI app
+openapi:
+	PYTHONPATH=$(PYTHONPATH) $(PYTHON) scripts/export_openapi.py
+
 ## api-docs: Open API documentation
 api-docs:
 	@echo "API docs available at: http://localhost:8000/docs"
@@ -105,11 +107,3 @@ download-data:
 benchmark:
 	PYTHONPATH=$(PYTHONPATH) $(PYTHON) scripts/benchmark.py
 
-## mlflow: Start MLflow UI
-mlflow:
-	mlflow ui --backend-store-uri sqlite:///mlflow.db
-
-## migrate-v1-v2: Migrate model from v1 to v2
-migrate-v1-v2:
-	@echo "Running migration from heuristic (v1) to DBSCAN (v2)..."
-	PYTHONPATH=$(PYTHONPATH) $(PYTHON) -c "from gps.ml.registry import ModelRegistry; r = ModelRegistry(); r.migrate_version('v1', 'v2')"

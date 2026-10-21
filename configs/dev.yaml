@@ -5,17 +5,20 @@ stay_point:
   time_threshold_minutes: 30
   distance_threshold_meters: 200
 
-clustering:
-  eps_meters: 100.0
-  min_samples: 3
+clustering:                     # v2 places, notebooks/14_place_clustering.ipynb
+  eps_meters: 150.0
+  min_samples: 2
+  min_window_days: 2
 
 classification:
   home_hour_start: 22
-  home_hour_end: 6
+  home_hour_end: 8
   office_hour_start: 9
   office_hour_end: 18
   work_days: [0, 1, 2, 3, 4]
-  min_confidence: 0.3
+  min_window_minutes: 240.0
+  min_support: 2
+  support_radius_m: 200.0
   min_duration_minutes: 30.0
   top_poi_n: 5
   geohash_precision: 6

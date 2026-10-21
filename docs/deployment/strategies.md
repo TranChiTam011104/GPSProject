@@ -1,219 +1,132 @@
-# Deployment Strategies Documentation
+# Deployment strategies (checkpoint 2)
 
-## Overview
+The service classifies a user's home/office from stay-points. Two models exist: **v1** (heuristic, per stay)
+and **v2** (DBSCAN places). This page records which rollout strategy fits them, with the evidence.
 
-This document describes three deployment strategies for model updates:
-- Shadow Mode
-- Canary Release
-- Blue-Green Deployment
+## What is different about this service
 
----
+- **Stateless and cheap.** A request is one in-memory classification (~4 ms for v1, ~7 ms for v2), so running
+  both models on every request costs almost nothing.
+- **No labels, no feedback loop.** GeoLife has no home/office ground truth, and a production caller never tells
+  us whether the answer was right. We can measure *agreement* between models, not accuracy.
+- **v1 and v2 disagree on about a quarter of users** (notebook 15: same place 76% home / 75% office when both answer).
+  A user sent to v2 at random could see their "home" jump to another place, with no criterion that says v2 is right.
 
-## 1. Shadow Mode
+## Strategies
 
-**Description**: New model runs in parallel with production model. Only the production model's results are returned to users, but both models' outputs are logged for comparison.
+| Strategy | What it needs | Fit here |
+|---|---|---|
+| **Shadow** | A second model run on real requests, results only logged | **Chosen.** Gives real-request evidence at zero user risk; the cost is a few ms of background CPU. |
+| **Canary** | A signal from the exposed users (errors, complaints, feedback) to decide whether to widen | **Rejected.** The signal does not exist: wrong answers are silent. Splitting by request would also make one user's home flip between models. |
+| **Blue-green** | Two environments side by side, the new one verified before an atomic switch | **Not used.** The only thing that changes is which model one image selects, so a second environment buys nothing. Promote is a plain config change (below); no pre-switch verification on a separate copy was done. |
 
-**Best for**: Testing new models with minimal risk
+## How shadow works in this repo
 
-### How it works
+`GPS_MODEL_VERSION=v1` answers. With `GPS_SHADOW_MODEL_VERSION=v2`, the same stay-points are classified by v2 in a
+FastAPI background task after the response is sent (`src/gps/api/shadow.py`). A shadow failure is counted and never
+reaches the caller. Empty value = shadow off.
 
-```
-┌─────────────┐      ┌──────────────┐
-│   Request   │─────▶│   Primary    │───▶ Response to User
-└─────────────┘      │   Model (v1) │
-                     └──────────────┘
-                           │
-                           ▼ (async, logged only)
-                     ┌──────────────┐
-                     │   Shadow     │
-                     │   Model (v2) │
-                     └──────────────┘
-```
+Only aggregates are kept: per place type `same_place` (within 200 m, the stay-point radius), `different_place`,
+`shadow_only` (v2 answers where v1 is unknown), `primary_only`, `both_unknown`, plus mean latency per model.
+**No coordinates are logged or stored** (see `docs/privacy/risk-analysis.md`). Read them at
+`GET /v1/shadow/summary` (per instance) or from the `gps.shadow` log lines (all instances, Cloud Logging).
 
-### Implementation
+## Result of the shadow run on all users
 
-```python
-from src.api.deploy_strategies import create_strategy_manager
+All 174 users' real stay-points were sent to a v1 service shadowing v2 (container, `GPS_ENV=prod`):
 
-manager = create_strategy_manager(
-    strategy="shadow",
-    shadow_enabled=True
-)
+| | home | office |
+|---|---|---|
+| same place (<= 200 m) | 79 | 69 |
+| different place | 25 | 23 |
+| v2 answers, v1 unknown | 10 | 16 |
+| v1 answers, v2 unknown | 0 | 8 |
+| both unknown | 60 | 58 |
+| **same-place rate when both answer** | **76.0%** | **75.0%** |
+| shadow errors | 0 | 0 |
 
-result = manager.process_with_shadow(
-    request_data=data,
-    primary_fn=primary_model.predict,
-    shadow_fn=shadow_model.predict
-)
-```
+This equals the offline baseline of notebook 15 (76% / 75%), so the served shadow reproduces the offline
+comparison. Mean latency: v1 4.2 ms, v2 7.4 ms.
 
-### Pros
-- Zero risk to users
-- Real-world performance comparison
-- Can detect issues before full rollout
+The same run against Cloud Run (revision `gps-inference-00005`, private, `GPS_MODEL_VERSION=v1`,
+`GPS_SHADOW_MODEL_VERSION=v2`, 2026-10-14) gave identical counts, 0 shadow errors, and 174 `gps.shadow` log
+lines in Cloud Logging without coordinates. Mean latency on Cloud Run: v1 9.7 ms, v2 10.0 ms. All 174 background
+tasks completed under request-based billing, so `--no-cpu-throttling` was not needed at this load.
 
-### Cons
-- Wasted compute (running two models)
-- Shadow model issues not visible to users
+## Promote
 
----
+Shadow shows *how* v2 differs, not that it is more correct. The case for v2 is the evidence in notebooks 14-15:
+split-half stability 62% / 62% vs v1 41% / 42%, and it answers 114 / 108 users vs 104 / 100. Promotion is the
+config flip `GPS_MODEL_VERSION=v2` (new Cloud Run revision, previous revision kept for rollback). Live agreement
+that falls far below the 76% / 75% baseline, or a rise in `shadow_errors`, means the request mix differs from
+the offline data and the promote should wait.
 
-## 2. Canary Release
+## Versioning
 
-**Description**: Small percentage of traffic is routed to the new model while the rest continues to use the current production model.
+There are no trained artifacts: a "model" is code plus the thresholds in `configs/*.yaml`, so it is versioned by
+what already identifies a deploy, not by a registry:
 
-**Best for**: Gradual rollout with real traffic testing
+| What | Identity |
+|---|---|
+| Behaviour | `model_version` string in every response and log line: `v1-heuristic`, `v2-cluster-dbscan` |
+| Parameters | `GET /v1/models` returns the active and shadow version and each version's effective thresholds |
+| Code + config | image tag in `gcr.io/<project>/gps-inference:<tag>` (immutable digest on the Cloud Run revision) |
+| Rollback | the previous Cloud Run revision stays available; traffic can be pointed back at it |
 
-### How it works
+The unused MLflow registry scaffolding (`gps.ml`, the mlflow compose service, `make mlflow`) was removed: with no
+artifacts and no experiment tracking in scope it had no consumer. Re-add it only when a trained model exists.
 
-```
-┌─────────────┐
-│   Request   │
-└──────┬──────┘
-       │
-       ▼ (X% random sample)
-┌──────────────┐     ┌──────────────┐
-│    Canary    │────▶│  New Model   │
-│    (X%)      │     │    (v2)     │
-└──────────────┘     └──────────────┘
-       │
-       │ (100-X%)
-       ▼
-┌──────────────┐     ┌──────────────┐
-│  Production  │────▶│ Old Model    │
-│  (100-X%)    │     │    (v1)     │
-└──────────────┘     └──────────────┘
-```
+## Promote result (2026-10-14)
 
-### Implementation
+The config flip was applied on Cloud Run (`gps-inference-00006`, `GPS_MODEL_VERSION=v2`, shadow off, same image,
+previous revision `00005` kept for rollback). `/health` reports `v2`, and users 068 and 010 sent to Cloud Run
+match the in-process v2 classifier.
 
-```python
-from src.api.deploy_strategies import create_strategy_manager
+## Least privilege (IAM, 2026-10-19)
 
-manager = create_strategy_manager(
-    strategy="canary",
-    canary_percentage=0.1  # 10% to new model
-)
+Until this change the service ran as the default compute service account, which holds `roles/editor` on the whole
+project, and the same account was the Cloud Build identity. The app calls no Google API (config is in the image, logs
+go to stdout), so it needed no role at all. Four identities now, one per job, each with the smallest scope:
 
-# Route request
-model_version = manager.route_request()
+| Role in the flow | Identity | Permissions (scope) |
+|---|---|---|
+| Runs the service | `gps-inference-run` | **none** |
+| Builds the image | `gps-build` | `artifactregistry.writer` (repo `gcr.io`), `logging.logWriter` (project), `storage.objectViewer` (source bucket) |
+| Deploys | `gps-deployer` | `run.developer` (the service), `iam.serviceAccountUser` (only `gps-inference-run`, `gps-build`), `artifactregistry.reader` (repo `gcr.io`), `storage.objectAdmin` + `legacyBucketReader` (source bucket), `cloudbuild.builds.editor`, `serviceusage.serviceUsageConsumer` (project) |
+| Calls the API | `gps-client` | `run.invoker` on the service only |
 
-# Increase canary gradually
-manager.update_canary_percentage(0.2)  # 20%
-manager.update_canary_percentage(0.5)  # 50%
-```
+The service stays `--no-allow-unauthenticated`. Build and deploy were run as `gps-deployer` (impersonation), so the
+narrow set is proven sufficient: image `gps-inference:v2-lp` → revision `gps-inference-00008`, same code and config
+as `00007`, `GPS_MODEL_VERSION=v2`.
 
-### Pros
-- Controlled risk exposure
-- Real traffic testing
-- Easy to rollback
+Checks:
 
-### Cons
-- Complex routing logic
-- Users may see inconsistent results
+| Check | Result |
+|---|---|
+| Call without a token | 403 |
+| `gps-client` token → `/health` | 200, `model_version: v2` |
+| Roles of `gps-inference-run` on the project | none |
+| Deployer tries to reset the service IAM (`gcloud run deploy` does) | refused, service stays private |
 
----
+Removed: `roles/editor` and `cloudbuild.builds.builder` from the default compute account (nothing uses it now); the
+`github-actions` account (MovieLens CI, `run.admin`, `storage.admin`, `iam.securityAdmin`) and its non-expiring JSON key
+were disabled, not deleted. The policy before cleanup is kept in `_claude_workspace/deploy/iam_before_cleanup.json`.
 
-## 3. Blue-Green Deployment
+Not least-privilege yet: `logging.logWriter`, `cloudbuild.builds.editor` and `serviceUsageConsumer` are bound at
+project level; `gcloud builds submit` needs `--gcs-source-staging-dir` because finding the default bucket needs the
+project-wide `storage.buckets.list`. A real CI would deploy through Workload Identity Federation, not a key.
 
-**Description**: Two identical environments run in parallel. Traffic is switched entirely from old (blue) to new (green) environment.
-
-**Best for**: Atomic, instant switchover
-
-### How it works
-
-```
-┌─────────────────────────────────────────────┐
-│                   LOAD BALANCER             │
-└─────────────────────┬───────────────────────┘
-                      │
-         ┌────────────┴────────────┐
-         ▼                         ▼
-   ┌───────────┐             ┌───────────┐
-   │   BLUE    │             │  GREEN    │
-   │  (v1)     │             │  (v2)     │
-   │  ACTIVE   │             │  STANDBY  │
-   └───────────┘             └───────────┘
-   
-   Switch: Update LB → 0% BLUE, 100% GREEN
-```
-
-### Implementation
-
-```python
-from src.api.deploy_strategies import create_strategy_manager
-
-manager = create_strategy_manager(
-    strategy="blue_green"
-)
-
-# Test green environment
-# ... verify green is healthy ...
-
-# Atomic switch
-manager.promote_model()
-
-# Rollback if needed
-manager.rollback()
-```
-
-### Pros
-- Instant switchover
-- Complete isolation
-- Easy rollback
-
-### Cons
-- Requires double resources
-- No gradual testing with real traffic
-
----
-
-## Comparison
-
-| Strategy   | Risk   | Cost   | Testing | Complexity |
-|------------|--------|--------|---------|------------|
-| Shadow     | Low    | High   | Silent  | Medium     |
-| Canary     | Medium | Low    | Real    | Medium     |
-| Blue-Green | High   | High   | None    | Low        |
-
----
-
-## AWS Implementation
-
-### Canary with ALB
-
-Use AWS Application Load Balancer with weighted routing:
+## Cloud Run
 
 ```bash
-# 10% to new version
-aws elbv2 modify-rule \
-  --rule-arn $RULE_ARN \
-  --actions \
-    Type=forward,TargetGroupArn=$OLD_TG,Weight=90 \
-    Type=forward,TargetGroupArn=$NEW_TG,Weight=10
+gcloud builds submit --config cloudbuild.yaml --substitutions _TAG=v1 .     # image gcr.io/<project>/gps-inference:v1
+gcloud run deploy gps-inference --image gcr.io/<project>/gps-inference:v1 --region us-central1 \
+  --no-allow-unauthenticated --memory 1Gi --max-instances 2 \
+  --set-env-vars GPS_MODEL_VERSION=v1,GPS_SHADOW_MODEL_VERSION=v2          # shadow
+gcloud run services update gps-inference --region us-central1 \
+  --update-env-vars GPS_MODEL_VERSION=v2,GPS_SHADOW_MODEL_VERSION=         # promote
+gcloud run services update-traffic gps-inference --region us-central1 --to-revisions <previous>=100   # rollback
 ```
 
-### Shadow with Lambda
-
-Deploy shadow Lambda alongside production:
-
-```python
-def lambda_handler(event, context):
-    # Primary response
-    primary_result = primary_lambda(event)
-    
-    # Shadow (async, no response to user)
-    invoke_async(shadow_lambda, event)
-    
-    return primary_result
-```
-
----
-
-## Recommendation
-
-For this project, **Canary** is recommended because:
-1. Easy to implement with API Gateway/ALB weighted routing
-2. Real traffic validation
-3. Gradual rollout reduces risk
-4. Simple rollback mechanism
+`.gcloudignore` is required: without it `gcloud builds submit` applies `.gitignore`, whose `models/` rule drops
+`src/gps/models/`.
